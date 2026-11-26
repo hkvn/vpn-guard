@@ -389,7 +389,7 @@ final class AppModel: ObservableObject {
             let kind = Self.kindName(link)
             let inUse = several && link.interface == s.primaryInterface
             if let name = link.trustedName {
-                return NetworkCardInfo(id: link.interface, symbol: Self.symbol(forTrustedName: name), title: name,
+                return NetworkCardInfo(id: link.interface, symbol: Self.symbol(for: link, hotspot: hotspot), title: name,
                                        detail: "\(kind) · \(link.routerIP)", trusted: true, pill: pillText(for: link), inUse: inUse)
             }
             return NetworkCardInfo(id: link.interface, symbol: Self.symbol(for: link, hotspot: hotspot), title: kind,
@@ -399,13 +399,13 @@ final class AppModel: ObservableObject {
         return cards.filter(\.inUse) + cards.filter { !$0.inUse }
     }
 
+    /// The card icon shows how the Mac is connected: Wi‑Fi, phone, or a cable (USB LAN, Ethernet,
+    /// Thunderbolt…). The card's title already says which network it is.
     static func symbol(for link: NetworkLink, hotspot: Bool) -> String {
-        if hotspot || link.label.localizedCaseInsensitiveContains("iphone") { return "personalhotspot" }
-        if link.label.localizedCaseInsensitiveContains("wi-fi") || link.label.localizedCaseInsensitiveContains("wi‑fi") { return "wifi" }
-        if link.label.localizedCaseInsensitiveContains("ethernet") || link.label.localizedCaseInsensitiveContains("thunderbolt") {
-            return "cable.connector.horizontal"
-        }
-        return "network"
+        let label = link.label.lowercased()
+        if hotspot || label.contains("iphone") || label.contains("ipad") { return "personalhotspot" }
+        if label.contains("wi-fi") || label.contains("wi‑fi") || label.contains("wifi") || label.contains("airport") { return "wifi" }
+        return "cable.connector.horizontal"
     }
 
     static func symbol(forTrustedName name: String) -> String {
@@ -958,7 +958,7 @@ final class AppModel: ObservableObject {
     // MARK: - Previews (render the UI with made-up data, no helper)
 
     enum PreviewScenario: String, CaseIterable {
-        case protected, wireguard, trusted, connecting, blocked, paused, off, setup, mixed, mixedPhone
+        case protected, wireguard, trusted, connecting, blocked, paused, off, setup, mixed, mixedPhone, officeTwo
     }
 
     init(preview: PreviewScenario) {
@@ -979,12 +979,15 @@ final class AppModel: ObservableObject {
         var config = GuardConfig(enabled: true, vpnServers: ["vpn.example.com"],
                                  hostIPs: ["vpn.example.com": ["198.51.100.20"]], trusted: [office, home])
         let hotspot = NetworkLink(interface: "en0", displayName: "Wi-Fi", address: "172.20.10.6",
-                                  routerIP: "172.20.10.1", routerMAC: "9e:4a:01:7c:22:b5")
+                                  routerIP: "172.20.10.1", routerMAC: "9e:4a:01:7c:22:b5", dnsServers: ["172.20.10.1"])
         var officeLink = NetworkLink(interface: "en0", displayName: "Wi-Fi", address: "192.168.88.23",
-                                     routerIP: "192.168.88.1", routerMAC: office.routerMAC)
+                                     routerIP: "192.168.88.1", routerMAC: office.routerMAC, dnsServers: ["192.168.88.1", "1.1.1.1"])
         officeLink.trustedName = "Office"
         let iPhoneUSB = NetworkLink(interface: "en7", displayName: "iPhone USB", address: "172.20.10.2",
-                                    routerIP: "172.20.10.1", routerMAC: "9e:4a:01:7c:22:b5")
+                                    routerIP: "172.20.10.1", routerMAC: "9e:4a:01:7c:22:b5", dnsServers: ["172.20.10.1"])
+        var officeLAN = NetworkLink(interface: "en7", displayName: "USB 10/100/1000 LAN", address: "192.168.88.24",
+                                    routerIP: "192.168.88.1", routerMAC: office.routerMAC, dnsServers: ["192.168.88.1", "1.1.1.1"])
+        officeLAN.trustedName = "Office"
         var primary: String?
 
         var mode = GuardMode.locked
@@ -1012,6 +1015,8 @@ final class AppModel: ObservableObject {
             macVPNState = .disconnected
         case .mixed:
             reason = .mixed; links = [officeLink, iPhoneUSB]; primary = "en0"; macVPNState = .disconnected
+        case .officeTwo:
+            mode = .open; reason = .trusted; links = [officeLink, officeLAN]; primary = "en7"; macVPNState = .disconnected
         case .mixedPhone:
             reason = .mixed; links = [officeLink, iPhoneUSB]; primary = "en7"
             macVPNState = .connected

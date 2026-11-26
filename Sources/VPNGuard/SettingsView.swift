@@ -313,6 +313,98 @@ private struct IconLegend: View {
 
 // MARK: - Networks
 
+/// One network the Mac is on: name, connection, trust, and the details VPN Guard knows about it.
+private struct HereNetworkCard: View {
+    @EnvironmentObject private var model: AppModel
+    let link: NetworkLink
+    let inUse: Bool
+    let several: Bool
+
+    var body: some View {
+        let trusted = link.trustedName != nil
+        let tone: Tone = trusted ? .blue : .orange
+        let framed = inUse && several
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                IconTile(symbol: AppModel.symbol(for: link, hotspot: TrustPick.isPhoneHotspot(link)), tone: tone, size: 38)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 7) {
+                        Text(link.trustedName ?? AppModel.kindName(link))
+                            .font(.system(size: 15, weight: .semibold))
+                        if framed {
+                            Text("● In use")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(tone.text)
+                        }
+                    }
+                    Text("\(link.label) · card \(link.interface)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Pill(text: model.pillText(for: link), tone: tone)
+                if !trusted {
+                    Button("Trust This Network…") { model.trustCurrentNetwork() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canTrustCurrent)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            Rectangle().fill(Palette.separator).frame(height: 1)
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible())], alignment: .leading, spacing: 0) {
+                ForEach(rows, id: \.label) { row in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(row.label)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 6)
+                        Text(row.value)
+                            .font(.system(size: 12, weight: .medium, design: row.mono ? .monospaced : .default))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 7)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Palette.separator).frame(height: 1) }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+        }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(framed ? tone.fill.opacity(0.06) : Palette.cardFill))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(framed ? tone.fill.opacity(0.6) : Palette.cardStroke, lineWidth: framed ? 1.5 : 1))
+    }
+
+    private var rows: [(label: String, value: String, mono: Bool)] {
+        let mac = link.routerMAC.flatMap(Net.normalizeMAC)
+        let entry = model.status?.config.trusted.first { $0.routerMAC == mac }
+        let dns = link.dnsServers ?? []
+        let reason = model.status?.reason
+        let internet: String
+        if several && !inUse {
+            internet = "Standby"
+        } else if link.trustedName != nil || reason == .disabled || reason == .paused {
+            internet = "Goes out here"
+        } else {
+            internet = "Only through the VPN"
+        }
+        return [
+            ("Your address", link.address ?? "—", true),
+            ("Router", link.routerIP, true),
+            ("Router hardware address", mac ?? "Not known yet", mac != nil),
+            ("DNS", dns.isEmpty ? "—" : dns.joined(separator: ", "), true),
+            ("Trusted since", entry.map { $0.addedAt.formatted(date: .abbreviated, time: .omitted) } ?? "Not trusted", false),
+            ("Internet", internet, false),
+        ]
+    }
+}
+
 private struct NetworksPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var selected: UUID?
@@ -366,26 +458,23 @@ private struct NetworksPage: View {
         model.status?.config.trusted.first { $0.id == selected }
     }
 
+    /// The networks the Mac is on, with details. The one in use first and framed (canvas: "Settings ·
+    /// Networks · details of the networks you are on").
     @ViewBuilder private var hereCards: some View {
         let links = model.status?.links ?? []
-        if links.isEmpty {
-            HeaderCard(title: "No network", detail: Text("Join a network. VPN Guard checks it right away.")) {
-                IconTile(symbol: "wifi.slash", tone: nil, size: 42)
-            } trailing: { EmptyView() }
-        }
-        ForEach(links, id: \.interface) { link in
-            let trusted = link.trustedName != nil
-            let hotspot = TrustPick.isPhoneHotspot(link)
-            HeaderCard(title: link.trustedName ?? AppModel.kindName(link),
-                       detail: Text("\(link.label) · router \(link.routerIP) · ")
-                        + Text(model.pillText(for: link)).foregroundColor(trusted ? Tone.blue.text : Tone.orange.text).fontWeight(.medium)) {
-                IconTile(symbol: trusted ? AppModel.symbol(forTrustedName: link.trustedName ?? "") : AppModel.symbol(for: link, hotspot: hotspot),
-                         tone: trusted ? .blue : .orange, size: 42)
-            } trailing: {
-                if !trusted {
-                    Button("Trust This Network…") { model.trustCurrentNetwork() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!model.canTrustCurrent)
+        let primary = model.status?.primaryInterface
+        let sorted = links.filter { $0.interface == primary } + links.filter { $0.interface != primary }
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeading(title: "You are on",
+                           trailing: links.count > 1 ? "\(links.count) networks · the one in use is first" : nil)
+            if links.isEmpty {
+                HeaderCard(title: "No network", detail: Text("Join a network. VPN Guard checks it right away.")) {
+                    IconTile(symbol: "wifi.slash", tone: nil, size: 42)
+                } trailing: { EmptyView() }
+            }
+            VStack(spacing: 10) {
+                ForEach(sorted, id: \.interface) { link in
+                    HereNetworkCard(link: link, inUse: link.interface == primary, several: links.count > 1)
                 }
             }
         }

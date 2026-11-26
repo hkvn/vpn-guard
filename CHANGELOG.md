@@ -7,12 +7,16 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 From testing on a real Mac with office Wi‑Fi, a LAN cable and an iPhone over USB.
 
 ### Added
+- **Settings → Networks shows details** of each network you are on: your address, router, router
+  hardware address, DNS servers, trusted since, and whether internet goes out there. The one in use is
+  first and framed.
 - **Colored menu bar icon** (Settings → General → Menu bar icon): each state in its own color, so you
   can tell them apart at a glance. Monochrome, like other Mac icons, stays the default.
 
 ### Changed
 - The network your Mac uses is shown **first and highlighted** (a frame in the state's color and
   "● In use"). Long card names are shorter ("USB 10/100/1000 LAN" is now "USB LAN").
+- Network card icons show how you are connected (Wi‑Fi, cable, phone) instead of guessing from the name.
 
 ### Fixed
 - **Protection off or Pause now disconnects the VPN that VPN Guard started by itself** (it stayed on).

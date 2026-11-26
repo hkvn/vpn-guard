@@ -30,6 +30,11 @@ enum PreviewRenderer {
                 let view = SettingsView().environmentObject(model)
                 render(view, appearance: appearance, to: dir.appendingPathComponent("settings-\(pane.rawValue)-\(name).png"))
             }
+            // Networks with two networks at once (Office over cable, in use, and Wi-Fi).
+            let twoModel = AppModel(preview: .officeTwo)
+            twoModel.settingsPane = .networks
+            render(SettingsView().environmentObject(twoModel), appearance: appearance,
+                   to: dir.appendingPathComponent("settings-networks-two-\(name).png"))
             // General with the Color menu bar icon style chosen.
             let colorModel = AppModel(preview: .protected)
             colorModel.settingsPane = .general

@@ -102,10 +102,14 @@ public struct NetworkLink: Codable, Hashable, Sendable {
     public var trustedName: String?
     /// configd service ID (to find the network macOS prefers, from the service order).
     public var serviceID: String?
+    /// DNS servers this network gives (shown in Settings → Networks).
+    public var dnsServers: [String]?
 
     public init(interface: String, displayName: String? = nil, address: String? = nil,
-                routerIP: String, routerMAC: String? = nil, trustedName: String? = nil, serviceID: String? = nil) {
+                routerIP: String, routerMAC: String? = nil, trustedName: String? = nil, serviceID: String? = nil,
+                dnsServers: [String]? = nil) {
         self.serviceID = serviceID
+        self.dnsServers = dnsServers
         self.interface = interface
         self.displayName = displayName
         self.address = address

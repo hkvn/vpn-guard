@@ -25,13 +25,17 @@ enum NetworkProbe {
                 mac = Net.normalizeMAC(hw)
             }
             let parts = key.split(separator: "/")
+            let dnsKey = key.replacingOccurrences(of: "/IPv4", with: "/DNS") as CFString
+            let dns = ((SCDynamicStoreCopyValue(store, dnsKey) as? [String: Any])?["ServerAddresses"] as? [String] ?? [])
+                .filter { Net.isIPv4($0) || Net.isIPv6($0) }
             byInterface[ifname] = NetworkLink(
                 interface: ifname,
                 displayName: InterfaceNames.name(for: ifname),
                 address: (d["Addresses"] as? [String])?.first,
                 routerIP: router,
                 routerMAC: mac,
-                serviceID: parts.count >= 4 ? String(parts[3]) : nil
+                serviceID: parts.count >= 4 ? String(parts[3]) : nil,
+                dnsServers: Array(dns.prefix(4))
             )
         }
         return byInterface.values.sorted { $0.interface < $1.interface }
