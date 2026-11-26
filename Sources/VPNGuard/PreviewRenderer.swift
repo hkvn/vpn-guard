@@ -30,6 +30,34 @@ enum PreviewRenderer {
                 let view = SettingsView().environmentObject(model)
                 render(view, appearance: appearance, to: dir.appendingPathComponent("settings-\(pane.rawValue)-\(name).png"))
             }
+            // General with the Color menu bar icon style chosen.
+            let colorModel = AppModel(preview: .protected)
+            colorModel.settingsPane = .general
+            colorModel.menuBarIconStyle = .color
+            render(SettingsView().environmentObject(colorModel), appearance: appearance,
+                   to: dir.appendingPathComponent("settings-general-color-\(name).png"))
+            // The real menu bar images, both styles, on a dark and a light menu bar.
+            let kinds: [GlyphKind] = [.lock, .check, .dots, .cross, .pause, .dashed, .bang]
+            let strip = VStack(spacing: 8) {
+                ForEach(MenuBarIconStyle.allCases) { style in
+                    HStack(spacing: 8) {
+                        ForEach([true, false], id: \.self) { darkBar in
+                            HStack(spacing: 14) {
+                                ForEach(kinds.indices, id: \.self) { i in
+                                    Image(nsImage: GlyphRenderer.menuBarImage(kinds[i], description: "", style: style))
+                                        .renderingMode(style == .color ? .original : .template)
+                                        .foregroundStyle(darkBar ? Color.white : Color.black)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 24)
+                            .background(darkBar ? Color(hex: 0x26282E) : Color(hex: 0xE8E8EC))
+                        }
+                    }
+                }
+            }
+            .padding(10)
+            render(strip, appearance: appearance, to: dir.appendingPathComponent("menubar-icons-\(name).png"))
             let steps: [(String, AddVPNFlow.Step)] = [("type", .chooseType), ("wireguard", .wireGuard),
                                                      ("l2tp", .macForm), ("approve", .approve("Branch Office"))]
             for (label, step) in steps {

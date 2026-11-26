@@ -14,6 +14,29 @@ enum GlyphKind: Equatable {
     case empty    // no network
 }
 
+/// How the menu bar shield looks (Settings → General). Monochrome is a template image like other Mac
+/// icons; Color keeps one color per state. Design: canvas row "Menu bar icon · color option", outline style.
+enum MenuBarIconStyle: String, CaseIterable, Identifiable {
+    case monochrome, color
+    var id: String { rawValue }
+}
+
+/// One color per state for the Color style. Yellow is a little deeper than on the canvas (F2C200) so its
+/// thin lines still show on a light menu bar.
+enum GlyphPalette {
+    static func color(_ kind: GlyphKind) -> NSColor {
+        switch kind {
+        case .lock: return NSColor(hex: 0x2DB84F)
+        case .check: return NSColor(hex: 0x0A7AFF)
+        case .dots: return NSColor(hex: 0xF5820B)
+        case .cross: return NSColor(hex: 0xE5372E)
+        case .pause: return NSColor(hex: 0xE3AC00)
+        case .dashed, .empty: return NSColor(hex: 0x8E8E93)
+        case .bang: return NSColor(hex: 0xA550E0)
+        }
+    }
+}
+
 enum GlyphGeometry {
     static var shield: Path {
         var p = Path()
@@ -77,7 +100,9 @@ enum GlyphGeometry {
 
 enum GlyphRenderer {
     /// Draws a glyph centred in `rect` of a y-down context. `lineWidth` is in 24-unit space.
-    static func draw(_ kind: GlyphKind, in ctx: CGContext, rect: CGRect, color: CGColor, lineWidth: CGFloat) {
+    /// `lockInk`: draw the lock in this color instead of cutting it out of the shield (Color style).
+    static func draw(_ kind: GlyphKind, in ctx: CGContext, rect: CGRect, color: CGColor, lineWidth: CGFloat,
+                     lockInk: CGColor? = nil) {
         let scale = min(rect.width, rect.height) / 24
         ctx.saveGState()
         ctx.translateBy(x: rect.midX - 12 * scale, y: rect.midY - 12 * scale)
@@ -92,7 +117,12 @@ enum GlyphRenderer {
         case .lock:
             ctx.addPath(GlyphGeometry.shield.cgPath)
             ctx.fillPath()
-            ctx.setBlendMode(.destinationOut)
+            if let lockInk {
+                ctx.setFillColor(lockInk)
+                ctx.setStrokeColor(lockInk)
+            } else {
+                ctx.setBlendMode(.destinationOut)
+            }
             ctx.addPath(GlyphGeometry.lockBody.cgPath)
             ctx.fillPath()
             ctx.setLineWidth(1.35)
@@ -116,17 +146,21 @@ enum GlyphRenderer {
 
     private static var menuBarCache: [String: NSImage] = [:]
 
-    /// Template image for the menu bar (macOS tints it for light and dark menu bars).
+    /// The menu bar image. Monochrome: a template (macOS tints it for light and dark menu bars).
+    /// Color: a normal image that keeps its colors.
     @MainActor
-    static func menuBarImage(_ kind: GlyphKind, description: String) -> NSImage {
-        let key = "\(kind)"
+    static func menuBarImage(_ kind: GlyphKind, description: String, style: MenuBarIconStyle = .monochrome) -> NSImage {
+        let key = "\(kind)-\(style.rawValue)"
         if let cached = menuBarCache[key] { return cached }
+        let colored = style == .color
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            draw(kind, in: ctx, rect: rect, color: NSColor.black.cgColor, lineWidth: 1.9)
+            draw(kind, in: ctx, rect: rect,
+                 color: colored ? GlyphPalette.color(kind).cgColor : NSColor.black.cgColor,
+                 lineWidth: 1.9, lockInk: colored ? NSColor.white.cgColor : nil)
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = !colored
         image.accessibilityDescription = description
         menuBarCache[key] = image
         return image
@@ -138,13 +172,17 @@ struct GuardGlyph: View {
     let kind: GlyphKind
     var color: Color
     var lineWidth: CGFloat = 1.6
+    /// Draw the lock in this color instead of cutting it out (Color style).
+    var lockInk: Color? = nil
     @Environment(\.self) private var environment
 
     var body: some View {
         let cg = color.resolve(in: environment).cgColor
+        let lock = lockInk?.resolve(in: environment).cgColor
         Canvas { ctx, size in
             ctx.withCGContext { cgContext in
-                GlyphRenderer.draw(kind, in: cgContext, rect: CGRect(origin: .zero, size: size), color: cg, lineWidth: lineWidth)
+                GlyphRenderer.draw(kind, in: cgContext, rect: CGRect(origin: .zero, size: size), color: cg,
+                                   lineWidth: lineWidth, lockInk: lock)
             }
         }
         .accessibilityHidden(true)

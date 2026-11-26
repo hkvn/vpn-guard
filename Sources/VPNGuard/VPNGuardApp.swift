@@ -14,7 +14,8 @@ struct VPNGuardApp: App {
             PopoverView()
                 .environmentObject(model)
         } label: {
-            Image(nsImage: GlyphRenderer.menuBarImage(model.look.glyph, description: "VPN Guard: \(model.look.title)"))
+            Image(nsImage: GlyphRenderer.menuBarImage(model.look.glyph, description: "VPN Guard: \(model.look.title)",
+                                                      style: model.menuBarIconStyle))
         }
         .menuBarExtraStyle(.window)
 

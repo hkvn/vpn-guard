@@ -6,6 +6,10 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
 From testing on a real Mac with office Wi‑Fi, a LAN cable and an iPhone over USB.
 
+### Added
+- **Colored menu bar icon** (Settings → General → Menu bar icon): each state in its own color, so you
+  can tell them apart at a glance. Monochrome, like other Mac icons, stays the default.
+
 ### Changed
 - The network your Mac uses is shown **first and highlighted** (a frame in the state's color and
   "● In use"). Long card names are shorter ("USB 10/100/1000 LAN" is now "USB LAN").

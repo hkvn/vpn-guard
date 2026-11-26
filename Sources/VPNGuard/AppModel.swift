@@ -114,6 +114,10 @@ final class AppModel: ObservableObject {
     @Published var autoConnect: Bool {
         didSet { UserDefaults.standard.set(autoConnect, forKey: Keys.autoConnect); runAutoVPN() }
     }
+    /// Settings → General: how the menu bar shield looks. Monochrome by default, like other Mac icons.
+    @Published var menuBarIconStyle: MenuBarIconStyle = .monochrome {
+        didSet { UserDefaults.standard.set(menuBarIconStyle.rawValue, forKey: Keys.menuBarIconStyle) }
+    }
     @Published var autoDisconnect: Bool {
         didSet { UserDefaults.standard.set(autoDisconnect, forKey: Keys.autoDisconnect) }
     }
@@ -126,6 +130,7 @@ final class AppModel: ObservableObject {
         static let autoServer = "autoServer"   // before 1.1.2: one server
         static let autoServers = "autoServers"
         static let vpnStartedByUs = "vpnStartedByVPNGuard"
+        static let menuBarIconStyle = "menuBarIconStyle"
         static let onboardingDone = "onboardingDone"
         static let pauseLength = "pauseLength"
     }
@@ -167,6 +172,7 @@ final class AppModel: ObservableObject {
         selectedVPNID = d.string(forKey: Keys.vpnServiceID)
         autoConnect = d.bool(forKey: Keys.autoConnect)
         autoDisconnect = d.bool(forKey: Keys.autoDisconnect)
+        menuBarIconStyle = MenuBarIconStyle(rawValue: d.string(forKey: Keys.menuBarIconStyle) ?? "") ?? .monochrome
 
         // Profiles hold a password: never leave old ones lying around.
         try? FileManager.default.removeItem(at: Self.profileFolder)

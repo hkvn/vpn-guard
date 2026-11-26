@@ -47,6 +47,9 @@ The shield in the menu bar shows the state at a glance:
 | Dashed shield | **Protection is off.** |
 | Shield with "!" | **Needs attention.** The helper is missing or not answering. |
 
+Prefer colors? In **Settings → General → Menu bar icon**, choose **Color**: Protected green, Trusted
+blue, Connecting orange, Blocked red, Paused yellow, Off gray, Attention purple.
+
 ### The popover
 
 <img src="images/popover-protected-light.png" width="320" alt="Popover: Protected">

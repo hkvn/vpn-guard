@@ -174,8 +174,10 @@ private struct GeneralPage: View {
             }
 
             VStack(alignment: .leading, spacing: 0) {
-                SectionHeading(title: "Menu bar icon")
-                SettingsCard(padding: 14) { IconLegend() }
+                SectionHeading(title: "Menu bar icon", trailing: "Choose how the shield looks")
+                IconStylePicker()
+                SettingsCard(padding: 14) { IconLegend(style: model.menuBarIconStyle) }
+                    .padding(.top, 10)
             }
         }
     }
@@ -211,7 +213,80 @@ private struct GeneralPage: View {
     }
 }
 
+/// Two cards: Monochrome or Color, each with samples on a dark and a light menu bar.
+/// Design: canvas "Settings · General · choose the menu bar icon style".
+private struct IconStylePicker: View {
+    @EnvironmentObject private var model: AppModel
+    private let sample: [GlyphKind] = [.lock, .check, .cross, .dashed]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            card(.monochrome, "Monochrome", "Like other Mac icons. Black or white, follows the menu bar.")
+            card(.color, "Color", "Each state has its own color, easy to see at a glance.")
+        }
+    }
+
+    private func card(_ style: MenuBarIconStyle, _ name: String, _ detail: String) -> some View {
+        let selected = model.menuBarIconStyle == style
+        return Button { model.menuBarIconStyle = style } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(selected ? Tone.blue.fill : Color.secondary)
+                    Text(name).font(.system(size: 13, weight: .semibold))
+                }
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    bar(style, dark: true)
+                    bar(style, dark: false)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.cardFill))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(selected ? Tone.blue.fill : Palette.cardStroke, lineWidth: selected ? 2 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(name) menu bar icon")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    private func bar(_ style: MenuBarIconStyle, dark: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(sample.indices, id: \.self) { i in
+                GuardGlyph(kind: sample[i], color: IconLegend.color(sample[i], style: style, dark: dark),
+                           lineWidth: 1.9, lockInk: style == .color ? .white : nil)
+                    .frame(width: 16, height: 16)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(dark ? Color(hex: 0x26282E) : Color(hex: 0xE8E8EC)))
+        .accessibilityHidden(true)
+    }
+}
+
 private struct IconLegend: View {
+    var style: MenuBarIconStyle = .monochrome
+
+    /// Glyph color for a style; `dark` picks the monochrome ink for a dark or light bar (nil: follow the window).
+    static func color(_ kind: GlyphKind, style: MenuBarIconStyle, dark: Bool? = nil) -> Color {
+        if style == .color { return Color(nsColor: GlyphPalette.color(kind)) }
+        switch dark {
+        case true?: return Color(hex: 0xF5F5F7)
+        case false?: return Color(hex: 0x1D1D1F)
+        case nil: return .primary
+        }
+    }
+
     private let items: [(GlyphKind, String)] = [
         (.lock, "Protected"), (.check, "Trusted"), (.dots, "Connecting"),
         (.cross, "Blocked"), (.pause, "Paused"), (.dashed, "Off"), (.bang, "Attention"),
@@ -221,7 +296,8 @@ private struct IconLegend: View {
         HStack(alignment: .top, spacing: 0) {
             ForEach(items.indices, id: \.self) { i in
                 VStack(spacing: 7) {
-                    GuardGlyph(kind: items[i].0, color: .primary, lineWidth: 1.9)
+                    GuardGlyph(kind: items[i].0, color: Self.color(items[i].0, style: style), lineWidth: 1.9,
+                               lockInk: style == .color ? .white : nil)
                         .frame(width: 17, height: 17)
                         .frame(width: 40, height: 26)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.05)))
