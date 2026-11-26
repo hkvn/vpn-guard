@@ -2,7 +2,7 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
-## 1.2.2 — unreleased
+## 1.2.2 — 2026-11-26
 
 From testing on a real Mac with office Wi‑Fi, a LAN cable and an iPhone over USB.
 
