@@ -38,8 +38,8 @@ SOFTWARE.
 
 ## Go supplementary libraries
 
-`golang.org/x/crypto` v0.37.0, `golang.org/x/net` v0.39.0, `golang.org/x/sys` v0.32.0 (same license) —
-https://go.googlesource.com
+`golang.org/x/crypto` v0.37.0, `golang.org/x/net` v0.39.0, `golang.org/x/sys` v0.32.0, and the Go
+standard library and runtime compiled into the engine (same license) — https://go.googlesource.com
 
 ```
 Copyright 2009 The Go Authors.

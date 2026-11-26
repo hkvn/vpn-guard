@@ -47,6 +47,19 @@ The tunnel is up but no handshake came back.
 
 `vpnguard wg list` shows the interface, bytes sent and received, and the last error.
 
+## macOS says "VPN Guard" was not opened
+
+The free DMG is not notarized by Apple, so macOS blocks the first start. Click **Done**, open
+**System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to VPN Guard.
+To check the download first: `shasum -a 256 VPN-Guard-x.y.z.dmg` must match the `.sha256` file on the
+release page.
+
+## "Needs attention" right after updating the app
+
+Expected once per update. The helper only accepts the exact app copy that installed it, and a new
+copy is a different app to it. Click **Reinstall Helper…** and type your password. Protection stays on
+meanwhile.
+
 ## The app says "Helper not responding" or "Needs attention"
 
 Reinstall the helper: Settings → Helper & About → **Reinstall…** (or the button in the popover). If it

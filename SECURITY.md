@@ -15,6 +15,19 @@ changelog unless you ask otherwise.
 
 Only the latest release gets security fixes.
 
+## Verifying a download
+
+The DMG on the release page is built by the public [release workflow](.github/workflows/release.yml)
+from the tagged source; the workflow run is linked in the release notes. It is ad-hoc signed and not
+notarized (there is no paid Apple Developer ID yet). Check it with:
+
+```bash
+shasum -a 256 VPN-Guard-x.y.z.dmg        # must match VPN-Guard-x.y.z.dmg.sha256
+codesign -dv "/Applications/VPN Guard.app"   # flags=…(adhoc,runtime)
+```
+
+If you prefer, build it yourself from the same tag (see the README).
+
 ## What VPN Guard protects against
 
 The goal: **on a network you do not trust, no traffic leaves the Mac outside the VPN.**
@@ -52,10 +65,14 @@ The goal: **on a network you do not trust, no traffic leaves the Mac outside the
 - **Fail closed.** No network, an unknown router, or one untrusted network among several: locked.
 - **Least privilege.** Only the helper runs as root. The app and CLI run as the user and talk to the
   helper over XPC.
-- **Who may control the helper.** Each XPC connection must be signed by the same Apple team as the
-  helper, with the app's or the helper's identifier. **Ad-hoc builds** (no certificate) can only check
-  the identifiers, which another local program could copy. If that matters to you, build with an
-  Apple Development or Developer ID certificate (`scripts/build.sh` picks one automatically).
+- **Who may control the helper.** Builds signed with a certificate: each XPC connection must be
+  signed by the same Apple team, with the app's or the helper's identifier. **Ad-hoc builds** (the
+  free DMG): when you type your admin password to install the helper, it records the code hashes
+  (cdhash) of that exact app copy; afterwards only that copy and the `vpnguard` tool itself are
+  accepted. A copy changed in any way, even re-signed, is refused. That is also why every app update
+  asks for the password once.
+- **Hardened runtime** on the app, the helper and the WireGuard engine: other programs cannot inject
+  code into them or attach a debugger, so they cannot borrow the app's right to talk to the helper.
 - **Input checks.** Everything that reaches `pfctl`, `ifconfig`, `route` or `/etc/resolver` is
   validated (IPv4 and CIDR syntax, interface names, host names). Unit tests try injection strings.
 - **Secrets.** WireGuard private keys are stored root-only (0600), written so they are never readable

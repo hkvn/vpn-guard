@@ -3,7 +3,7 @@ import Foundation
 /// Names and paths shared by the app, the helper and the install scripts.
 /// Keep these in sync with Resources/helper/*.sh and the launchd plist.
 public enum VG {
-    public static let version = "1.1.0"
+    public static let version = "1.1.1"
 
     public static let appBundleID = "local.vpnguard.app"
     public static let helperLabel = "local.vpnguard.helper"
@@ -16,6 +16,9 @@ public enum VG {
     public static let configDirectory = "/Library/Application Support/VPNGuard"
     public static let configPath = configDirectory + "/config.json"
     public static let pfTokenPath = "/var/run/vpnguard.pftoken"
+    /// Code hashes of the app copy that installed the helper (written as root at install time).
+    /// Used only by builds without a team ID (ad-hoc signed, e.g. the downloadable DMG).
+    public static let clientPinsPath = configDirectory + "/clients.json"
 
     /// Child of the stock `anchor "com.apple/*"` in /etc/pf.conf, so we never edit pf.conf.
     /// "000." sorts before Apple's own sub-anchors (200.AirDrop, 250.ApplicationFirewall),

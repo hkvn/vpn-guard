@@ -17,8 +17,10 @@ This guide shows how to set up and use VPN Guard. For how it works inside, see
 
 <img src="images/welcome-light.png" width="620" alt="Welcome window">
 
-After `scripts/install.sh` (see the [README](../README.md#install-build-from-source)), VPN Guard opens a
-welcome window with three steps:
+Download the DMG from the [latest release](https://github.com/hkvn/vpn-guard/releases/latest), drag
+VPN Guard to Applications and open it. The first time, macOS blocks it because this free build is not
+notarized by Apple: click **Done**, then **System Settings → Privacy & Security → Open Anyway** (see the
+[README](../README.md#install)). VPN Guard then opens a welcome window with three steps:
 
 1. **Install the helper.** A small program that runs as root and controls the macOS firewall (pf).
    macOS asks for your password once.
@@ -244,8 +246,12 @@ tail -f /var/log/vpnguard.log
 log stream --predicate 'subsystem == "local.vpnguard"'
 ```
 
-**Updates:** pull the new source and run `scripts/install.sh` again. If the helper changed, the app
-shows **Update Helper…** (one password).
+**Updates:** download the new DMG and drag VPN Guard to Applications again (replace the old one).
+The helper only takes orders from the exact app copy that installed it, so a new copy shows **Needs
+attention** with **Reinstall Helper…** (or **Update Helper…**). Click it and type your password once.
+Your trusted networks, VPNs and settings are kept, and the firewall stays on during the update.
+
+If you build from source: pull and run `scripts/install.sh` again.
 
 **Uninstall:** Settings → Helper & About → **Uninstall…** removes the helper, the firewall rules, the
 WireGuard engine and the DNS files. Your trusted networks are kept unless you uninstall from Terminal

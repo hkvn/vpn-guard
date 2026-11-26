@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/hkvn/vpn-guard/releases/latest"><img src="https://img.shields.io/github/v/release/hkvn/vpn-guard?label=download" alt="Download"></a>
   <a href="https://github.com/hkvn/vpn-guard/actions/workflows/ci.yml"><img src="https://github.com/hkvn/vpn-guard/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/macOS-15%2B-black?logo=apple" alt="macOS 15+">
   <img src="https://img.shields.io/badge/Swift-6-orange?logo=swift" alt="Swift 6">
@@ -61,20 +62,21 @@ VPN Guard fixes this with one rule:
 
 ## Requirements
 
-- macOS 15 Sequoia or later (Apple silicon or Intel).
+- macOS 15 Sequoia or later, Apple silicon or Intel.
 - An admin account (the helper runs as root to control the firewall).
-- To build from source: Xcode 16 or later (Swift 6) and Go 1.22 or later (for the WireGuard engine).
+- Nothing else: the WireGuard engine is inside the app.
 
-## Install (build from source)
+## Install
 
-```bash
-git clone https://github.com/hkvn/vpn-guard.git
-cd vpn-guard
-scripts/install.sh
-```
+### Download (recommended)
 
-`install.sh` builds the app, copies it to `/Applications`, and opens it. The welcome window then walks
-you through three steps:
+1. Download **VPN-Guard-x.y.z.dmg** from the [latest release](https://github.com/hkvn/vpn-guard/releases/latest).
+2. Open it and drag **VPN Guard** to **Applications**.
+3. Open VPN Guard. The first time, macOS says it was not opened, because this free build is not
+   notarized by Apple. Click **Done**, then open **System Settings → Privacy & Security**, scroll down
+   and click **Open Anyway** next to VPN Guard. You do this only once.
+
+The welcome window then walks you through three steps:
 
 1. **Install the helper.** macOS asks for your password once.
 2. **Choose your VPN**, or add one (WireGuard is built in).
@@ -82,9 +84,23 @@ you through three steps:
 
 Protection stays **off** until you turn it on, so installing never cuts your internet.
 
-> Code signing: `scripts/build.sh` signs with your "Apple Development" or "Developer ID" certificate if
-> it finds one, otherwise ad-hoc. With a real certificate, the helper only accepts commands from apps
-> signed by the same team. See [SECURITY.md](SECURITY.md).
+> **Why the warning?** Apple only removes it for apps signed with a paid Developer ID and notarized.
+> The DMG is built in public by [GitHub Actions](.github/workflows/release.yml) from the tagged source,
+> with a SHA-256 checksum next to it. The helper accepts commands only from the exact app copy that
+> installed it. See [SECURITY.md](SECURITY.md).
+
+### Build from source
+
+Needs Xcode 16 or later (Swift 6) and Go 1.22 or later (only to build the WireGuard engine).
+
+```bash
+git clone https://github.com/hkvn/vpn-guard.git
+cd vpn-guard
+scripts/install.sh
+```
+
+`install.sh` builds the app, copies it to `/Applications`, and opens it. To make the same DMG as a
+release: `UNIVERSAL=1 SIGN_IDENTITY=- scripts/build.sh && scripts/make-dmg.sh`.
 
 ## Documentation
 

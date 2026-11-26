@@ -408,4 +408,42 @@ final class WireGuardTests: XCTestCase {
         r.interface = nil
         XCTAssertFalse(r.isRunning)
     }
+
+    // MARK: - Who may control the helper
+
+    func testClientTrustTeamRequirement() {
+        let r = ClientTrust.requirement(teamID: "ABCDE12345", ownCDHash: nil, pinnedCDHashes: [])
+        XCTAssertEqual(r, "anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\" and "
+            + "(identifier \"local.vpnguard.app\" or identifier \"local.vpnguard.helper\")")
+    }
+
+    func testClientTrustAdHocPinsExactHashes() {
+        let own = String(repeating: "a", count: 40)
+        let app = "0123456789ABCDEF0123456789abcdef01234567"
+        let r = ClientTrust.requirement(teamID: nil, ownCDHash: own, pinnedCDHashes: [app, own])
+        XCTAssertEqual(r, "cdhash H\"\(own)\" or cdhash H\"\(app.lowercased())\"")
+        XCTAssertFalse(r.contains("identifier"), "ad-hoc builds must not trust identifiers alone")
+    }
+
+    func testClientTrustRejectsInjection() {
+        let evil = [
+            "aaaa\" or always or cdhash H\"",
+            String(repeating: "a", count: 39),
+            String(repeating: "a", count: 41),
+            String(repeating: "g", count: 40),
+            "",
+        ]
+        XCTAssertEqual(ClientTrust.requirement(teamID: nil, ownCDHash: nil, pinnedCDHashes: evil), "never")
+        // A bad team ID falls back to hashes, never to a broken team rule.
+        XCTAssertEqual(ClientTrust.requirement(teamID: "X\" or always", ownCDHash: nil, pinnedCDHashes: []), "never")
+        XCTAssertEqual(ClientTrust.requirement(teamID: "", ownCDHash: nil, pinnedCDHashes: []), "never")
+    }
+
+    func testClientPinsKeepOnlyValidHashes() throws {
+        let good = String(repeating: "b", count: 40)
+        let pins = ClientPins(appPath: "/Applications/VPN Guard.app", cdhashes: [good, "nope", good.uppercased()])
+        XCTAssertEqual(pins.validHashes, [good])
+        let round = try Wire.decode(ClientPins.self, from: Wire.encode(pins))
+        XCTAssertEqual(round.validHashes, [good])
+    }
 }

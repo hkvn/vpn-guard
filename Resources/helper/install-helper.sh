@@ -33,6 +33,15 @@ install -m 0644 -o root -g wheel "$SRC/$LABEL.plist" "$PLIST"
 if [ -f "$SRC/local.vpnguard.wireguard-go" ]; then
   install -m 0755 -o root -g wheel "$SRC/local.vpnguard.wireguard-go" /Library/PrivilegedHelperTools/local.vpnguard.wireguard-go
 fi
+# Files from a downloaded DMG carry the quarantine flag; launchd would refuse to run them.
+xattr -c "$BIN" /Library/PrivilegedHelperTools/local.vpnguard.wireguard-go 2>/dev/null || true
+
+# Remember which app copy installed the helper. Ad-hoc builds (the free DMG) only accept XPC
+# calls from exactly this copy and from the vpnguard tool itself.
+APP_BUNDLE="$(cd "$SRC/../../.." 2>/dev/null && pwd -P || true)"
+if [[ "$APP_BUNDLE" == *.app && -x "$APP_BUNDLE/Contents/MacOS/VPNGuard" ]]; then
+  "$BIN" pin-app "$APP_BUNDLE" || echo "Warning: could not pin the app; it may need a helper reinstall." >&2
+fi
 touch /var/log/vpnguard.log
 chmod 0644 /var/log/vpnguard.log
 

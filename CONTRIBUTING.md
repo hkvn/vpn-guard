@@ -57,8 +57,14 @@ Prefer split-tunnel WireGuard configs and test addresses (`192.0.2.x`) when test
 
 1. Update `VG.version` in `Sources/VPNGuardCore/Constants.swift` (the app offers a helper update when
    the versions differ).
-2. Add the changes to `CHANGELOG.md`.
-3. Tag `vX.Y.Z`.
+2. Add a `## X.Y.Z — date` section to `CHANGELOG.md` (it becomes the release notes).
+3. Push a tag `vX.Y.Z`. The [release workflow](.github/workflows/release.yml) checks that the tag
+   matches `VG.version`, runs the tests, builds the universal DMG and creates the GitHub release with
+   the DMG and its checksum.
+
+Never attach a DMG built on your own Mac: `scripts/build.sh` signs with your personal certificate if it
+finds one. To test the release build locally: `UNIVERSAL=1 SIGN_IDENTITY=- scripts/build.sh &&
+scripts/make-dmg.sh`.
 
 By contributing you agree that your contribution is licensed under the GPL v3, like the rest of the
 project.

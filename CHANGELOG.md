@@ -2,6 +2,19 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.1.1 — 2026-11-26
+
+### Added
+- **Download and use:** a DMG for every release, one app for Apple silicon and Intel, built in public
+  by GitHub Actions with a SHA-256 checksum. Nothing else to install.
+
+### Security
+- Builds without a certificate (like the DMG) no longer trust the app's name. The helper records the
+  exact code hashes of the app copy that installed it and accepts only that copy and the `vpnguard`
+  tool. After an app update, reinstall the helper once.
+- The app, the helper and the WireGuard engine now use the hardened runtime (no code injection).
+- The helper installer clears the download quarantine flag on the files it installs.
+
 ## 1.1.0 — 2026-11-26
 
 ### Added

@@ -53,6 +53,7 @@ flowchart LR
 | `/Library/LaunchDaemons/local.vpnguard.helper.plist` | root 0644 | Starts the helper at boot, keeps it alive |
 | `/Library/Application Support/VPNGuard/config.json` | root 0644 | Settings, trusted networks, servers, WireGuard tunnels (no secrets) |
 | `/Library/Application Support/VPNGuard/wireguard-keys.json` | root **0600** | WireGuard private and pre-shared keys |
+| `/Library/Application Support/VPNGuard/clients.json` | root 0644 | Code hashes of the app copy that installed the helper (ad-hoc builds) |
 | `/etc/resolver/<vpn host>` | root 0644 | Sends only that VPN server name to the helper's DNS answerer |
 | `/var/run/vpnguard.pftoken` | root | pf enable reference |
 | `/var/run/vpnguard-dns.json` | root | Original DNS settings while WireGuard overrides them (crash backup) |
@@ -168,10 +169,15 @@ once; the profile file is readable only by the user and deleted after 10 minutes
 
 - **XPC** over the Mach service `local.vpnguard.helper.xpc`, one method with a JSON payload
   (`HelperCommand` → `HelperReply`).
-- **Who may call:** the helper sets a code-signing requirement on every connection:
-  `anchor apple generic and certificate leaf[subject.OU] = "<its own team ID>" and (identifier
-  "local.vpnguard.app" or identifier "local.vpnguard.helper")`. With an ad-hoc build there is no team
-  ID, so only the identifiers are checked (weaker; see [SECURITY.md](../SECURITY.md)).
+- **Who may call:** the helper sets a code-signing requirement on every connection, built and
+  validated by `ClientTrust` (Core, unit tested):
+  - signed with a certificate: `anchor apple generic and certificate leaf[subject.OU] = "<own team
+    ID>" and (identifier "local.vpnguard.app" or identifier "local.vpnguard.helper")`;
+  - ad-hoc (the DMG): `cdhash H"<own>" or cdhash H"<app arm64>" or cdhash H"<app x86_64>"`. The app
+    hashes come from `clients.json`, written by `vpnguard pin-app` (root only) inside
+    `install-helper.sh`, right after the user typed the admin password. `pin-app` checks the app's
+    signature and identifier first. No valid hash at all gives `never` (fail closed).
+- All binaries are signed with the hardened runtime, so the pinned processes cannot be injected into.
 - **Push updates:** the helper posts the Darwin notification `local.vpnguard.status` when its state
   changes; the app then fetches the status. The app also refreshes every 10 s.
 - **Auto VPN** lives in the app: on an untrusted network it starts the chosen VPN (with back-off), and
@@ -183,6 +189,17 @@ SwiftUI `MenuBarExtra` (window style) plus two windows (Settings, Welcome). The 
 template image drawn in code (`GuardGlyph`) from the same 24-unit shield geometry as the app icon and
 the popover. The status orb (`ProtectionOrb`) animates with a `TimelineView` at 30 fps only while
 visible, respects Reduce Motion, and toggles protection on a 0.7 s press and hold.
+
+## Release builds
+
+`.github/workflows/release.yml` runs on every `v*` tag: unit tests, then `UNIVERSAL=1 SIGN_IDENTITY=-
+scripts/build.sh` (Swift for arm64 + x86_64, wireguard-go built per architecture with `go build` and
+joined with `lipo`, everything ad-hoc signed with the hardened runtime), then `scripts/make-dmg.sh`
+(drag-to-Applications DMG with a short "How to open" note, plus a SHA-256 file), and attaches both to
+the GitHub release. `install-helper.sh` clears the quarantine flag on the files it copies, because
+launchd will not start a quarantined helper.
+
+## Previews
 
 `VPNGuard --render-previews <dir>` renders every screen in light and dark mode with made-up data,
 without a helper. It is used to check the UI and to make the screenshots in this repo.

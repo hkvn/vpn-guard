@@ -54,9 +54,50 @@ enum CLI {
         case "wg": return wireGuard(rest)
         case "detect": return detect()
         case "rules": return rules()
+        case "pin-app": return pinApp(rest)
         case "help", "-h", "--help": print(usage); return 0
         default: return fail("Unknown command \"\(command)\".\n\n\(usage)")
         }
+    }
+
+    /// Records which app copy may control the helper (ad-hoc builds). Called as root by
+    /// install-helper.sh right after the user typed the admin password.
+    ///   vpnguard pin-app </Applications/VPN Guard.app>          (root: save)
+    ///   vpnguard pin-app --check </Applications/VPN Guard.app>  (anyone: print hashes + requirement)
+    private static func pinApp(_ args: [String]) -> Int32 {
+        let checkOnly = args.first == "--check"
+        let paths = checkOnly ? Array(args.dropFirst()) : args
+        guard paths.count == 1, let path = paths.first, path.hasPrefix("/") else {
+            return fail("Usage: vpnguard pin-app [--check] </path/to/VPN Guard.app>")
+        }
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard url.pathExtension == "app" else { return fail("\(url.path) is not an app bundle.") }
+        let hashes: [String]
+        do { hashes = try CodeSigning.appCDHashes(at: url) } catch { return fail(error.localizedDescription) }
+
+        if checkOnly {
+            print("app:  \(hashes.joined(separator: " "))")
+            print("self: \(CodeSigning.ownCDHash() ?? "-")")
+            print("team: \(CodeSigning.ownTeamID() ?? "none (ad-hoc)")")
+            print("requirement: " + ClientTrust.requirement(
+                teamID: CodeSigning.ownTeamID(), ownCDHash: CodeSigning.ownCDHash(), pinnedCDHashes: hashes))
+            return 0
+        }
+        guard getuid() == 0 else { return fail("Run this as root. The installer does it for you.") }
+        let pins = ClientPins(appPath: url.path, cdhashes: hashes)
+        do {
+            try FileManager.default.createDirectory(atPath: VG.configDirectory, withIntermediateDirectories: true)
+            let tmp = VG.clientPinsPath + ".tmp"
+            try? FileManager.default.removeItem(atPath: tmp)
+            guard FileManager.default.createFile(atPath: tmp, contents: Wire.encode(pins),
+                                                 attributes: [.posixPermissions: 0o644, .ownerAccountID: 0, .groupOwnerAccountID: 0])
+            else { return fail("Could not write \(tmp).") }
+            if rename(tmp, VG.clientPinsPath) != 0 { return fail("Could not save \(VG.clientPinsPath).") }
+        } catch {
+            return fail(error.localizedDescription)
+        }
+        print("Pinned \(url.lastPathComponent): \(hashes.joined(separator: ", "))")
+        return 0
     }
 
     private static func fail(_ message: String) -> Int32 {

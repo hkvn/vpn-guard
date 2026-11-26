@@ -34,7 +34,7 @@ pkill -f /Library/PrivilegedHelperTools/local.vpnguard.wireguard-go 2>/dev/null 
 rm -f /Library/PrivilegedHelperTools/local.vpnguard.wireguard-go /var/run/wireguard/vpnguard.name /var/run/vpnguard-dns.json
 printf 'remove State:/Network/Service/VPNGuard-WireGuard/IPv4\nremove State:/Network/Service/VPNGuard-WireGuard/DNS\nquit\n' | scutil >/dev/null 2>&1 || true
 
-rm -f "$BIN" "$PLIST"
+rm -f "$BIN" "$PLIST" "/Library/Application Support/VPNGuard/clients.json"
 if [ -L /usr/local/bin/vpnguard ]; then rm -f /usr/local/bin/vpnguard; fi
 
 for arg in "$@"; do

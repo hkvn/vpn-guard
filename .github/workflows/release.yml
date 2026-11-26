@@ -1,0 +1,64 @@
+name: Release
+
+# Push a tag vX.Y.Z (matching VG.version) and this builds the universal DMG and attaches it to the
+# GitHub release. Run it by hand to (re)build the DMG for an existing tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, for example v1.1.1"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-15
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Tag must match VG.version
+        run: |
+          V=$(sed -nE 's/.*static let version = "([^"]+)".*/\1/p' Sources/VPNGuardCore/Constants.swift)
+          [ "v$V" = "$TAG" ] || { echo "::error::Tag $TAG does not match VG.version $V"; exit 1; }
+      - name: Unit tests
+        run: swift test
+      - name: Build the universal app (ad-hoc signed, hardened runtime)
+        run: UNIVERSAL=1 SIGN_IDENTITY=- scripts/build.sh
+      - name: Make the DMG
+        run: scripts/make-dmg.sh
+      - name: Attach to the GitHub release
+        run: |
+          V="${TAG#v}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            awk -v v="$V" 'index($0, "## " v " ") == 1 {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+            cat >> notes.md <<MD
+
+          ---
+
+          ### Download
+
+          **VPN-Guard-$V.dmg** below: one app for Apple silicon and Intel Macs, macOS 15 or later.
+
+          1. Open the DMG and drag **VPN Guard** to **Applications**.
+          2. Open it. macOS says it was not opened, because this free build is not notarized by Apple. Click **Done**.
+          3. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to VPN Guard.
+          4. Follow the 3 setup steps. Protection stays off until you turn it on.
+
+          Check your download: \`shasum -a 256 VPN-Guard-$V.dmg\` must print the value in **VPN-Guard-$V.dmg.sha256**.
+          The DMG is built from tag \`$TAG\` by [this workflow](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          MD
+            gh release create "$TAG" --verify-tag --title "VPN Guard $V" --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/*.dmg dist/*.sha256 --clobber
