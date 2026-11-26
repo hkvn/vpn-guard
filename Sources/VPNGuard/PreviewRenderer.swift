@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VPNGuardCore
 
 /// `VPNGuard --render-previews <folder>` draws every screen with made-up data to PNG files and exits.
 /// Used to check the design without a running helper or screen recording.
@@ -51,6 +52,16 @@ enum PreviewRenderer {
             for (label, sheet) in sheets {
                 render(sheet, appearance: appearance, to: dir.appendingPathComponent("sheet-\(label)-\(name).png"))
             }
+            // "Trust which network?": office Wi-Fi (used by the Mac) + iPhone over USB.
+            let pick = TrustPickerModel(candidates: [
+                NetworkLink(interface: "en0", displayName: "Wi-Fi", address: "192.168.88.23",
+                            routerIP: "192.168.88.1", routerMAC: "48:8f:5a:0b:11:20"),
+                NetworkLink(interface: "en7", displayName: "iPhone USB", address: "172.20.10.2",
+                            routerIP: "172.20.10.1", routerMAC: "9e:4a:01:7c:22:b5"),
+            ], primaryInterface: "en0")
+            pick.name = "Office"
+            render(TrustPickerView(model: pick), appearance: appearance, to: dir.appendingPathComponent("trust-picker-\(name).png"))
+
             let onboarding = OnboardingView().environmentObject(AppModel(preview: .blocked))
                 .background(Color(nsColor: .windowBackgroundColor))
             render(onboarding, appearance: appearance, to: dir.appendingPathComponent("welcome-\(name).png"))

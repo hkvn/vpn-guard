@@ -61,7 +61,17 @@ final class Firewall {
     }
 
     /// Drops open connections, so nothing made before the lock keeps running outside the VPN.
-    func flushStates() {
-        Shell.run(pfctl, ["-F", "states"])
+    /// `interfaces`: only the states on these cards (nil = all). Falls back to all if pfctl refuses.
+    func flushStates(interfaces: [String]? = nil) {
+        guard let interfaces, !interfaces.isEmpty else {
+            Shell.run(pfctl, ["-F", "states"])
+            return
+        }
+        for name in interfaces where Net.isValidInterfaceName(name) {
+            if !Shell.run(pfctl, ["-i", name, "-F", "states"]).ok {
+                Shell.run(pfctl, ["-F", "states"])
+                return
+            }
+        }
     }
 }

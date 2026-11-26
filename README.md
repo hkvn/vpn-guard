@@ -40,6 +40,7 @@ VPN Guard fixes this with one rule:
   and traffic to your VPN server. Everything else is refused, IPv6 included. It keeps working when the
   app is closed.
 - **Trusted networks by router hardware address**, not Wi‑Fi name (anyone can copy a Wi‑Fi name).
+  With two networks at once (office Wi‑Fi + your iPhone), only the untrusted one is limited to the VPN.
 - **Event driven.** The helper reacts to macOS network changes in milliseconds. No polling.
 - **Fails closed.** No network, an unknown router, or two networks where one is not trusted: locked.
 - **Built-in WireGuard client.** VPN Guard ships `wireguard-go` and runs it for you. Import a `.conf`

@@ -2,6 +2,19 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.2.0 — 2026-11-26
+
+### Changed
+- **Two networks at once** (office Wi‑Fi + iPhone over USB): each card is judged on its own. The trusted
+  one works as normal, the untrusted one may only be used by the VPN ("VPN only"). Before, the whole Mac
+  locked, and at the office the VPN usually cannot connect, so there was no internet. If macOS sends
+  traffic through the untrusted card, the VPN starts and everything goes through it.
+
+### Added
+- **"Trust which network?"**: with several networks, or on a phone hotspot, you tick what to trust.
+  Only the network your Mac uses is ticked; a phone hotspot is never ticked for you and shows a warning.
+- The popover shows which network is **in use** when there are several.
+
 ## 1.1.3 — 2026-11-26
 
 Fixes from a second review, of network loss and network change.

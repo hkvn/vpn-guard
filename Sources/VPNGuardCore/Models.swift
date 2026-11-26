@@ -129,6 +129,7 @@ public enum GuardReason: String, Codable, Sendable {
     case paused      // paused for a few minutes
     case trusted     // every active network is trusted
     case untrusted   // at least one active network is not trusted
+    case mixed       // some networks trusted, others not: only the untrusted ones are locked
     case resolving   // router MAC not known yet (locked while we look)
     case noNetwork   // no network with a router
 }
@@ -143,9 +144,13 @@ public struct GuardStatus: Codable, Equatable, Sendable {
     public var updatedAt: Date
     /// The WireGuard tunnel the helper runs (or tried to run).
     public var wg: WireGuardRuntime?
+    /// The card macOS sends internet traffic through (matters when there are several).
+    public var primaryInterface: String?
 
     public init(mode: GuardMode, reason: GuardReason, links: [NetworkLink], config: GuardConfig,
-                firewallError: String?, helperVersion: String, updatedAt: Date, wg: WireGuardRuntime? = nil) {
+                firewallError: String?, helperVersion: String, updatedAt: Date, wg: WireGuardRuntime? = nil,
+                primaryInterface: String? = nil) {
+        self.primaryInterface = primaryInterface
         self.mode = mode
         self.reason = reason
         self.links = links
@@ -162,6 +167,8 @@ public enum HelperCommand: Codable, Sendable {
     case status
     case refresh
     case trustCurrent(name: String)
+    /// Trust only the networks (of the ones the Mac is on now) whose router has one of these addresses.
+    case trustRouters(name: String, macs: [String])
     case untrust(id: UUID)
     case rename(id: UUID, name: String)
     case pause(minutes: Int)

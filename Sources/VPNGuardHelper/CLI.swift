@@ -173,6 +173,7 @@ enum CLI {
         case .paused: headline = "PAUSED until \(s.config.pausedUntil.map(timeString) ?? "?") (normal internet)"
         case .trusted: headline = "OPEN: trusted network"
         case .untrusted: headline = "LOCKED: untrusted network, only the VPN can connect"
+        case .mixed: headline = "PARTLY LOCKED: trusted networks work as normal, untrusted ones only for the VPN"
         case .resolving: headline = "LOCKED: checking the router"
         case .noNetwork: headline = "LOCKED: no network"
         }

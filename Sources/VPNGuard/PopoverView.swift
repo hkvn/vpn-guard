@@ -19,7 +19,7 @@ struct PopoverView: View {
                         InfoCard(symbol: card.symbol, tone: card.trusted == true ? .blue : nil,
                                  title: card.title, detail: card.detail) {
                             if let trusted = card.trusted {
-                                Pill(text: trusted ? "Trusted" : "Not trusted", tone: trusted ? .blue : .orange)
+                                Pill(text: card.pill, tone: trusted ? .blue : .orange)
                             }
                         }
                     }
@@ -137,7 +137,7 @@ struct PopoverView: View {
 
     private var actions: some View {
         HStack(spacing: 8) {
-            if model.status?.reason == .trusted {
+            if model.status?.reason == .trusted || model.mixedUsesTrusted {
                 Button("Manage Networks…") { openSettings(.networks) }
             } else {
                 Button("Trust This Network…") { model.trustCurrentNetwork() }

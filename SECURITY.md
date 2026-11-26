@@ -68,7 +68,9 @@ The goal: **on a network you do not trust, no traffic leaves the Mac outside the
 
 ## Design choices that matter for security
 
-- **Fail closed.** No network, an unknown router, or one untrusted network among several: locked.
+- **Fail closed.** No network or an unknown router: locked. Several networks where one is not trusted:
+  that one (and any with an unknown router) is limited to the VPN; only trusted cards work normally.
+- **Trusting a phone hotspot** asks first and warns, because the hotspot travels with the phone.
 - **Least privilege.** Only the helper runs as root. The app and CLI run as the user and talk to the
   helper over XPC.
 - **Who may control the helper.** Builds signed with a certificate: each XPC connection must be

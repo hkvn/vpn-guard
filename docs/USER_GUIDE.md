@@ -80,8 +80,19 @@ address is much harder.
 Good to know:
 
 - If the office router is replaced, trust the network again.
-- If the Mac is on **two networks at once** (for example office Wi‑Fi and an iPhone over USB) and one
-  of them is not trusted, VPN Guard locks. Every active network must be trusted.
+- If the Mac is on **two networks at once** (for example office Wi‑Fi and an iPhone over USB), each one
+  is judged on its own. The trusted one works as normal; the other may only be used by the VPN
+  (**VPN only**). If macOS sends your traffic through the untrusted one, the VPN starts and everything
+  goes through it.
+
+  <img src="images/popover-mixed-light.png" width="320" alt="Popover: Office trusted, iPhone hotspot VPN only">
+
+- When you press **Trust This Network…** while the Mac is on several networks, or on a phone hotspot,
+  VPN Guard asks **which** network to trust. Only the network your Mac uses is ticked. A phone hotspot is
+  never ticked for you and shows a warning: it goes everywhere with your phone, so trusting it would
+  turn the VPN off wherever you use that phone.
+
+  <img src="images/trust-picker-light.png" width="460" alt="Trust which network? dialog">
 - An iPhone hotspot is never trusted unless you trust it yourself.
 
 Manage the list in **Settings → Networks**: ⓘ shows the details, right-click to rename or remove, or

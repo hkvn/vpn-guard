@@ -299,10 +299,10 @@ private struct NetworksPage: View {
         }
         ForEach(links, id: \.interface) { link in
             let trusted = link.trustedName != nil
-            let hotspot = link.routerIP == "172.20.10.1"
-            HeaderCard(title: link.trustedName ?? (hotspot ? "iPhone hotspot" : link.label),
+            let hotspot = TrustPick.isPhoneHotspot(link)
+            HeaderCard(title: link.trustedName ?? AppModel.kindName(link),
                        detail: Text("\(link.label) · router \(link.routerIP) · ")
-                        + Text(trusted ? "Trusted" : "Not trusted").foregroundColor(trusted ? Tone.blue.text : Tone.orange.text).fontWeight(.medium)) {
+                        + Text(model.pillText(for: link)).foregroundColor(trusted ? Tone.blue.text : Tone.orange.text).fontWeight(.medium)) {
                 IconTile(symbol: trusted ? AppModel.symbol(forTrustedName: link.trustedName ?? "") : AppModel.symbol(for: link, hotspot: hotspot),
                          tone: trusted ? .blue : .orange, size: 42)
             } trailing: {

@@ -39,6 +39,7 @@ struct NetworkCardInfo: Identifiable, Equatable {
     let title: String
     let detail: String
     let trusted: Bool?
+    var pill: String = ""
 }
 
 enum SettingsPane: String, CaseIterable, Identifiable {
@@ -263,6 +264,37 @@ final class AppModel: ObservableObject {
         status?.links.contains { $0.routerMAC == t.routerMAC } ?? false
     }
 
+    /// The network macOS sends traffic through (matters when the Mac is on several).
+    var primaryLink: NetworkLink? {
+        guard let s = status else { return nil }
+        return s.links.first { $0.interface == s.primaryInterface } ?? s.links.first
+    }
+
+    /// Several networks, and macOS uses a trusted one: normal internet, the others are VPN only.
+    var mixedUsesTrusted: Bool { status?.reason == .mixed && primaryLink?.trustedName != nil }
+
+    /// "Your iPhone hotspot" at the start of a sentence, the card name otherwise.
+    static func subjectName(_ link: NetworkLink) -> String {
+        if link.routerIP == "172.20.10.1" { return "Your iPhone hotspot" }
+        return TrustPick.isPhoneHotspot(link) ? "Your phone hotspot" : link.label
+    }
+
+    static func objectName(_ link: NetworkLink) -> String {
+        if link.routerIP == "172.20.10.1" { return "your iPhone" }
+        return TrustPick.isPhoneHotspot(link) ? "your phone" : link.label
+    }
+
+    static func kindName(_ link: NetworkLink) -> String {
+        if link.routerIP == "172.20.10.1" { return "iPhone hotspot" }
+        return TrustPick.isPhoneHotspot(link) ? "Phone hotspot" : link.label
+    }
+
+    /// The label on a network card: trusted, only for the VPN (another network is trusted), or not trusted.
+    func pillText(for link: NetworkLink) -> String {
+        if link.trustedName != nil { return "Trusted" }
+        return status?.reason == .mixed ? "VPN only" : "Not trusted"
+    }
+
     var trustedNamesHere: String {
         (status?.links.compactMap(\.trustedName) ?? []).uniqued().joined(separator: " and ")
     }
@@ -304,23 +336,36 @@ final class AppModel: ObservableObject {
         case .resolving:
             return StateLook(glyph: .dots, tone: .gray, title: "Checking the network…",
                              subtitle: "Reading the router's address.", pulsing: true)
+        case .mixed:
+            if let used = primaryLink, let name = used.trustedName {
+                let others = untrustedLinks.map(Self.subjectName)
+                let one = others.count == 1
+                return StateLook(glyph: .check, tone: .blue, title: "Trusted network",
+                                 subtitle: "Your Mac uses \(name). \(others.joined(separator: " and ")) \(one ? "is" : "are") not trusted, so only the VPN may use \(one ? "it" : "them").")
+            }
+            let through = primaryLink.map(Self.objectName) ?? "a network"
+            return untrustedLook(vpnName: vpnName,
+                                 protected: "Your Mac sends traffic through \(through), which is not trusted, so all of it goes through your VPN.")
         case .untrusted:
-            if selectedVPN == nil {
-                return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
-                                 subtitle: "Choose the VPN to use on networks you don't trust.", primary: .chooseVPN)
-            }
-            switch vpnState {
-            case .connected:
-                return StateLook(glyph: .lock, tone: .green, title: "Protected",
-                                 subtitle: "This network is not trusted, so all traffic goes through your VPN.")
-            case .connecting:
-                return StateLook(glyph: .dots, tone: .orange, title: "Connecting…",
-                                 subtitle: "Starting \(vpnName). The internet opens as soon as it is up.",
-                                 primary: .connecting, pulsing: true)
-            default:
-                return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
-                                 subtitle: "The VPN is off, so nothing on this Mac can reach the internet here.", primary: .connectVPN)
-            }
+            return untrustedLook(vpnName: vpnName, protected: "This network is not trusted, so all traffic goes through your VPN.")
+        }
+    }
+
+    private func untrustedLook(vpnName: String, protected: String) -> StateLook {
+        if selectedVPN == nil {
+            return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
+                             subtitle: "Choose the VPN to use on networks you don't trust.", primary: .chooseVPN)
+        }
+        switch vpnState {
+        case .connected:
+            return StateLook(glyph: .lock, tone: .green, title: "Protected", subtitle: protected)
+        case .connecting:
+            return StateLook(glyph: .dots, tone: .orange, title: "Connecting…",
+                             subtitle: "Starting \(vpnName). The internet opens as soon as it is up.",
+                             primary: .connecting, pulsing: true)
+        default:
+            return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
+                             subtitle: "The VPN is off, so nothing on this Mac can reach the internet here.", primary: .connectVPN)
         }
     }
 
@@ -329,15 +374,17 @@ final class AppModel: ObservableObject {
         if s.links.isEmpty {
             return [NetworkCardInfo(id: "none", symbol: "wifi.slash", title: "No network", detail: "Not connected", trusted: nil)]
         }
+        let several = s.links.count > 1
         return s.links.map { link in
-            let hotspot = link.routerIP == "172.20.10.1"
-            let kind = hotspot ? "iPhone hotspot" : link.label
+            let hotspot = TrustPick.isPhoneHotspot(link)
+            let kind = Self.kindName(link)
+            let inUse = several && link.interface == s.primaryInterface ? " · in use" : ""
             if let name = link.trustedName {
                 return NetworkCardInfo(id: link.interface, symbol: Self.symbol(forTrustedName: name), title: name,
-                                       detail: "\(kind) · \(link.routerIP)", trusted: true)
+                                       detail: "\(kind) · \(link.routerIP)\(inUse)", trusted: true, pill: pillText(for: link))
             }
             return NetworkCardInfo(id: link.interface, symbol: Self.symbol(for: link, hotspot: hotspot), title: kind,
-                                   detail: "Router \(link.routerIP)", trusted: false)
+                                   detail: "Router \(link.routerIP)\(inUse)", trusted: false, pill: pillText(for: link))
         }
     }
 
@@ -373,11 +420,15 @@ final class AppModel: ObservableObject {
                 if rt?.isRunning == true { return "Waiting for \(server) to answer…" }
                 return "Connecting to \(server)…"
             default:
-                return status?.reason == .trusted ? "Not needed on this network" : "WireGuard · Disconnected"
+                return vpnNotNeeded ?? "WireGuard · Disconnected"
             }
         }
         switch vpnState {
         case .connected:
+            // Several networks and the VPN runs through an untrusted one: say which (short: 340 pt card).
+            if status?.reason == .mixed, let via = primaryLink, via.trustedName == nil {
+                return "Connected via \(via.label)"
+            }
             if let since = vpnConnectedSince {
                 let d = Self.duration(now.timeIntervalSince(since))
                 return d == "just now" ? "Connected just now" : "Connected for \(d)"
@@ -387,8 +438,15 @@ final class AppModel: ObservableObject {
         case .disconnecting: return "Disconnecting…"
         case .invalid: return "Not found in System Settings"
         case .none, .disconnected:
-            return status?.reason == .trusted ? "Not needed on this network" : "Disconnected"
+            return vpnNotNeeded ?? "Disconnected"
         }
+    }
+
+    /// Why the VPN is not needed right now, or nil if it is.
+    private var vpnNotNeeded: String? {
+        if status?.reason == .trusted { return "Not needed on this network" }
+        if mixedUsesTrusted, let name = primaryLink?.trustedName { return "Not needed: \(name) in use" }
+        return nil
     }
 
     static func duration(_ seconds: TimeInterval) -> String {
@@ -470,6 +528,12 @@ final class AppModel: ObservableObject {
     func trustCurrentNetwork() {
         let links = untrustedLinks
         guard !links.isEmpty else { return }
+        if TrustPick.needsPicker(links) {
+            let picker = TrustPickerModel(candidates: links, primaryInterface: status?.primaryInterface)
+            guard TrustPickerPresenter.run(picker), !picker.ticked.isEmpty else { return }
+            perform(.trustRouters(name: picker.cleanName, macs: Array(picker.ticked)))
+            return
+        }
         let lines = links.map { "\($0.label) · router \($0.routerIP) (\($0.routerMAC ?? "?"))" }.joined(separator: "\n")
         guard let name = Dialogs.askName(
             title: "Trust this network?",
@@ -770,7 +834,8 @@ final class AppModel: ObservableObject {
         }
 
         let resolvingFor = resolvingSince.map { Date().timeIntervalSince($0) } ?? 0
-        if AutoVPN.wantsVPN(mode: s.mode, reason: s.reason, resolvingFor: resolvingFor) {
+        if AutoVPN.wantsVPN(mode: s.mode, reason: s.reason, resolvingFor: resolvingFor,
+                            primaryTrusted: primaryLink?.trustedName != nil) {
             if vpnState == .connected, let v = selectedVPN, v.engine == .macOS, AutoVPN.isPPP(kind: v.kind),
                let on = vpnConnectedOn, AutoVPN.networkMovedAway(connectedOn: on, links: s.links) {
                 NSLog("VPN Guard: the network under \(v.name) is gone, restarting it")
@@ -865,7 +930,7 @@ final class AppModel: ObservableObject {
     // MARK: - Previews (render the UI with made-up data, no helper)
 
     enum PreviewScenario: String, CaseIterable {
-        case protected, wireguard, trusted, connecting, blocked, paused, off, setup
+        case protected, wireguard, trusted, connecting, blocked, paused, off, setup, mixed, mixedPhone
     }
 
     init(preview: PreviewScenario) {
@@ -890,6 +955,9 @@ final class AppModel: ObservableObject {
         var officeLink = NetworkLink(interface: "en0", displayName: "Wi-Fi", address: "192.168.88.23",
                                      routerIP: "192.168.88.1", routerMAC: office.routerMAC)
         officeLink.trustedName = "Office"
+        let iPhoneUSB = NetworkLink(interface: "en7", displayName: "iPhone USB", address: "172.20.10.2",
+                                    routerIP: "172.20.10.1", routerMAC: "9e:4a:01:7c:22:b5")
+        var primary: String?
 
         var mode = GuardMode.locked
         var reason = GuardReason.untrusted
@@ -914,6 +982,12 @@ final class AppModel: ObservableObject {
             macVPNState = .disconnected
         case .setup:
             macVPNState = .disconnected
+        case .mixed:
+            reason = .mixed; links = [officeLink, iPhoneUSB]; primary = "en0"; macVPNState = .disconnected
+        case .mixedPhone:
+            reason = .mixed; links = [officeLink, iPhoneUSB]; primary = "en7"
+            macVPNState = .connected
+            macConnectedSince = Date(timeIntervalSinceNow: -3 * 60)
         }
         var wgRuntime: WireGuardRuntime?
         if preview == .wireguard {
@@ -933,7 +1007,8 @@ final class AppModel: ObservableObject {
         } else {
             helperState = .ready
             status = GuardStatus(mode: mode, reason: reason, links: links, config: config, firewallError: nil,
-                                 helperVersion: VG.version, updatedAt: Date(), wg: wgRuntime)
+                                 helperVersion: VG.version, updatedAt: Date(), wg: wgRuntime,
+                                 primaryInterface: primary ?? links.first?.interface)
         }
     }
 }

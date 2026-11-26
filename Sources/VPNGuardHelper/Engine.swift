@@ -33,6 +33,8 @@ final class Engine {
     /// Links and reason of the latest evaluation (the published status can be one step behind).
     private var currentLinks: [NetworkLink] = []
     private var currentReason: GuardReason = .disabled
+    /// The card macOS sends traffic through (netstat / service order), when there are several.
+    private var currentPrimary: String?
     private var lastNetworksKey = ""
     private(set) var status: GuardStatus
     private var hasPublished = false
@@ -172,6 +174,7 @@ final class Engine {
         }
 
         currentLinks = links
+        currentPrimary = links.count > 1 ? NetworkProbe.primaryLink(links, store: dynamicStore)?.interface : links.first?.interface
         let networksKey = links.map { "\($0.interface)|\($0.routerIP)|\($0.routerMAC ?? "")" }.sorted().joined(separator: ",")
         let networksChanged = networksKey != lastNetworksKey
         lastNetworksKey = networksKey
@@ -213,7 +216,8 @@ final class Engine {
                                   routers: links.map(\.routerIP),
                                   interfaces: Interfaces.names(),
                                   dnsLookupPort: withDNS ? VG.dnsLookupPort : nil,
-                                  refuse: refuse)
+                                  refuse: refuse,
+                                  openInterfaces: currentReason == .mixed ? links.filter { $0.trustedName != nil }.map(\.interface) : [])
             }
             var wanted = rules(withDNS: dnsWindowOpen && !dnsRuleRejected)
             guard appliedMode != .locked || wanted != appliedRules else { return }
@@ -236,7 +240,12 @@ final class Engine {
             appliedMode = .locked
             appliedRules = rules
             firewallError = nil
-            if !wasLocked { firewall.flushStates() }
+            if !wasLocked {
+                // Cut connections that went out without the VPN. With trusted cards still open
+                // (`mixed`), only the untrusted cards' connections.
+                let untrusted = currentReason == .mixed ? links.filter { $0.trustedName == nil }.map(\.interface) : nil
+                firewall.flushStates(interfaces: untrusted)
+            }
         }
     }
 
@@ -295,7 +304,7 @@ final class Engine {
     private func publish(_ decision: (mode: GuardMode, reason: GuardReason), links: [NetworkLink], why: String) {
         var next = GuardStatus(mode: decision.mode, reason: decision.reason, links: links, config: config,
                                firewallError: firewallError, helperVersion: VG.version, updatedAt: status.updatedAt,
-                               wg: wgRuntime())
+                               wg: wgRuntime(), primaryInterface: currentPrimary)
         if next.firewallError == nil, let applied = appliedMode, applied != decision.mode {
             next.firewallError = "The firewall is not in the wanted state yet."
         }
@@ -333,7 +342,7 @@ final class Engine {
             wgError = nil
             return
         }
-        let gateway = NetworkProbe.primaryLink(links, store: dynamicStore)?.routerIP
+        let gateway = (links.first { $0.interface == currentPrimary } ?? links.first)?.routerIP
         let endpointIP = Net.isIPv4(tunnel.endpointHost) ? tunnel.endpointHost : config.hostIPs[tunnel.endpointHost]?.first
         if wg.isRunning, wg.tunnelID == id, endpointIP == nil || endpointIP == wg.endpointIP {
             wg.updateEndpointRoute(gateway: gateway)
@@ -498,6 +507,23 @@ final class Engine {
                 throw CommandError(message: "The router's hardware address is not known yet. Try again in a few seconds.")
             }
             // One entry per router, even if the Mac reaches it over Wi-Fi and a cable.
+            for entry in TrustedNetwork.newEntries(name: Self.cleanName(rawName), candidates: candidates) {
+                config.trusted.append(entry)
+                Log.info("Trusted \(entry.name): router \(entry.routerIP ?? "?") \(entry.routerMAC)")
+            }
+            persist()
+            evaluate("trusted")
+
+        case .trustRouters(let rawName, let macs):
+            evaluate("trust request")
+            let wanted = Set(macs.compactMap(Net.normalizeMAC))
+            let candidates = status.links.filter { link in
+                guard link.trustedName == nil, let mac = link.routerMAC.flatMap(Net.normalizeMAC) else { return false }
+                return wanted.contains(mac)
+            }
+            guard !candidates.isEmpty else {
+                throw CommandError(message: "That network is not here any more, or it is already trusted.")
+            }
             for entry in TrustedNetwork.newEntries(name: Self.cleanName(rawName), candidates: candidates) {
                 config.trusted.append(entry)
                 Log.info("Trusted \(entry.name): router \(entry.routerIP ?? "?") \(entry.routerMAC)")

@@ -7,10 +7,14 @@ public enum AutoVPN {
     public static let resolvingGrace: TimeInterval = 5
 
     /// Should the VPN be running for this state of the helper?
-    public static func wantsVPN(mode: GuardMode, reason: GuardReason, resolvingFor: TimeInterval) -> Bool {
+    /// `primaryTrusted`: with several networks (`mixed`), whether macOS sends traffic through a
+    /// trusted one. Then no VPN is needed; through an untrusted one it is.
+    public static func wantsVPN(mode: GuardMode, reason: GuardReason, resolvingFor: TimeInterval,
+                                primaryTrusted: Bool = false) -> Bool {
         guard mode == .locked else { return false }
         switch reason {
         case .untrusted: return true
+        case .mixed: return !primaryTrusted
         case .resolving: return resolvingFor >= resolvingGrace
         default: return false
         }
@@ -144,5 +148,28 @@ public enum Routes {
             return Net.isValidInterfaceName(name) ? name : nil
         }
         return nil
+    }
+}
+
+// MARK: - Choosing which network to trust (1.2.0)
+
+public enum TrustPick {
+    /// Phone hotspots use fixed router addresses: iPhone 172.20.10.1, Android 192.168.43.1. A hotspot
+    /// goes everywhere with its phone, so trusting it is risky.
+    public static func isPhoneHotspot(_ link: NetworkLink) -> Bool {
+        ["172.20.10.1", "192.168.43.1"].contains(link.routerIP)
+    }
+
+    /// The simple "give it a name" dialog is enough for one ordinary network. Several networks, or a
+    /// phone hotspot, get the dialog where you tick what to trust.
+    public static func needsPicker(_ candidates: [NetworkLink]) -> Bool {
+        candidates.count > 1 || candidates.contains(where: isPhoneHotspot)
+    }
+
+    /// Ticked at first: only the network macOS uses, and never a phone hotspot (router addresses).
+    public static func defaultTicks(_ candidates: [NetworkLink], primaryInterface: String?) -> Set<String> {
+        guard let used = candidates.first(where: { $0.interface == primaryInterface }), !isPhoneHotspot(used),
+              let mac = used.routerMAC.flatMap(Net.normalizeMAC) else { return [] }
+        return [mac]
     }
 }

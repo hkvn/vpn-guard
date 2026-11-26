@@ -70,8 +70,9 @@ doubt it locks:
 | Protection off | open | `disabled` |
 | Paused, the pause has not ended, and no new router has appeared since it started | open | `paused` |
 | No network with a router | **locked** | `noNetwork` |
-| A known router that is not trusted | **locked** | `untrusted` |
-| A router whose hardware address is not known yet | **locked** | `resolving` |
+| No trusted network, and a known router that is not trusted | **locked** | `untrusted` |
+| No trusted network, and router hardware addresses not known yet | **locked** | `resolving` |
+| Some networks trusted, others not (e.g. office Wi‑Fi + iPhone USB) | **locked**, trusted cards open | `mixed` |
 | Every active network is trusted | open | `trusted` |
 
 ## Network detection
@@ -109,6 +110,10 @@ block drop in quick all
 
 - Tunnels and local VM bridges are passed because whatever they send to the internet leaves through
   a real interface later, where it is filtered. Any new tunnel interface triggers a rule rebuild.
+- In `mixed`, a line `pass quick on { <trusted cards> } all no state` comes right after the first one,
+  so those cards work as normal while the untrusted ones stay VPN only. When the lock starts, pf states
+  are flushed only on the untrusted cards (`pfctl -i <card> -F states`). The app starts the VPN in
+  `mixed` only when macOS sends traffic through an untrusted card (`GuardStatus.primaryInterface`).
 - While there is no network or a router is still being checked (`noNetwork`, `resolving`), the last
   line is `block drop` instead, so a Wi‑Fi blip at a trusted place does not reset open connections.
 - Everything else, **IPv6 included**, is refused. `block return` makes apps fail fast instead of

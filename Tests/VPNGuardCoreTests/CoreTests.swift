@@ -80,18 +80,26 @@ final class PolicyTests: XCTestCase {
         XCTAssertEqual(d.reason, .trusted)
     }
 
-    func testOneUntrustedCardLocksEverything() {
+    /// 1.2.0: office + iPhone USB locks only the untrusted card ("mixed"), not the whole Mac.
+    func testTrustedPlusUntrustedIsMixed() {
         let c = GuardConfig(enabled: true, trusted: [office])
         let links = [link(office.routerMAC, trusted: "Office"), link("cc:cc:cc:cc:cc:cc", ifname: "en7")]
         let d = Policy.decide(config: c, links: links, now: now)
         XCTAssertEqual(d.mode, .locked)
-        XCTAssertEqual(d.reason, .untrusted)
+        XCTAssertEqual(d.reason, .mixed)
     }
 
-    func testTrustedPlusUnknownStillLocks() {
+    func testTrustedPlusUnknownIsMixed() {
         let c = GuardConfig(enabled: true, trusted: [office])
         let links = [link(office.routerMAC, trusted: "Office"), link(nil, ifname: "en7")]
+        XCTAssertEqual(Policy.decide(config: c, links: links, now: now).reason, .mixed, "an unknown card is VPN only")
         XCTAssertEqual(Policy.decide(config: c, links: links, now: now).mode, .locked)
+    }
+
+    func testNoTrustedCardStillLocksEverything() {
+        let c = GuardConfig(enabled: true, trusted: [office])
+        let links = [link("cc:cc:cc:cc:cc:cc"), link(nil, ifname: "en7")]
+        XCTAssertEqual(Policy.decide(config: c, links: links, now: now).reason, .untrusted)
     }
 
     func testTrustMatchingUsesNormalizedMAC() {
@@ -649,5 +657,59 @@ final class WireGuardTests: XCTestCase {
         XCTAssertTrue(drop.contains("block drop out quick all"))
         XCTAssertFalse(drop.contains("block return"))
         XCTAssertTrue(PFRules.lockRules(vpnServers: [], routers: [], interfaces: []).contains("block return out quick all"))
+    }
+
+    // MARK: - Two networks at once (1.2.0)
+
+    func testLockRulesOpenOnlyTrustedCards() {
+        let rules = PFRules.lockRules(vpnServers: ["203.0.113.10"], routers: ["192.0.2.1", "172.20.10.1"],
+                                      interfaces: [], openInterfaces: ["en0", "en0", "utun3", "lo0", "en0 } pass all"])
+        XCTAssertTrue(rules.contains("pass quick on { en0 } all no state"))
+        XCTAssertFalse(rules.contains("pass all"), "a bad interface name never reaches pf")
+        XCTAssertFalse(rules.contains("on { utun3 }"))
+        let lines = rules.split(separator: "\n").map(String.init)
+        XCTAssertLessThan(lines.firstIndex(of: "pass quick on { en0 } all no state")!,
+                          lines.firstIndex { $0.hasPrefix("block return out") }!)
+        XCTAssertFalse(PFRules.lockRules(vpnServers: [], routers: [], interfaces: []).contains("on { en0 }"))
+    }
+
+    func testMixedRulesParseWithPfctl() throws {
+        let rules = PFRules.lockRules(vpnServers: ["203.0.113.10"], routers: ["192.0.2.1"], interfaces: ["bridge100"],
+                                      dnsLookupPort: VG.dnsLookupPort, openInterfaces: ["en0", "en5"])
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
+        p.arguments = ["-n", "-f", "-"]
+        let input = Pipe(), output = Pipe()
+        p.standardInput = input
+        p.standardOutput = output
+        p.standardError = output
+        try p.run()
+        input.fileHandleForWriting.write(Data(rules.utf8))
+        try input.fileHandleForWriting.close()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0, String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+    }
+
+    func testAutoVPNWithTwoNetworks() {
+        XCTAssertFalse(AutoVPN.wantsVPN(mode: .locked, reason: .mixed, resolvingFor: 0, primaryTrusted: true),
+                       "the Mac uses the office: no VPN")
+        XCTAssertTrue(AutoVPN.wantsVPN(mode: .locked, reason: .mixed, resolvingFor: 0, primaryTrusted: false),
+                      "the Mac uses the iPhone: VPN")
+    }
+
+    func testTrustPickDefaultsAndHotspots() {
+        let wifi = link("en0", "192.0.2.43", "192.0.2.1", "aa:bb:cc:00:00:01")
+        let phone = link("en7", "172.20.10.2", "172.20.10.1", "aa:bb:cc:00:00:02")
+        XCTAssertTrue(TrustPick.isPhoneHotspot(phone))
+        XCTAssertTrue(TrustPick.isPhoneHotspot(link("en0", "192.168.43.7", "192.168.43.1", nil)), "Android")
+        XCTAssertFalse(TrustPick.isPhoneHotspot(wifi))
+
+        XCTAssertFalse(TrustPick.needsPicker([wifi]), "one ordinary network: the simple dialog")
+        XCTAssertTrue(TrustPick.needsPicker([phone]), "a hotspot always gets the warning")
+        XCTAssertTrue(TrustPick.needsPicker([wifi, link("en5", "198.51.100.4", "198.51.100.1", "aa:bb:cc:00:00:03")]))
+
+        XCTAssertEqual(TrustPick.defaultTicks([wifi, phone], primaryInterface: "en0"), ["aa:bb:cc:00:00:01"])
+        XCTAssertEqual(TrustPick.defaultTicks([wifi, phone], primaryInterface: "en7"), [], "a hotspot is never ticked for you")
+        XCTAssertEqual(TrustPick.defaultTicks([phone], primaryInterface: "en0"), [], "the network in use is trusted already")
     }
 }
