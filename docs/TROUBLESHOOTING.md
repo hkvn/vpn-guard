@@ -30,10 +30,10 @@ Guard sees and why it is open or locked.
 ## The VPN does not connect while blocked
 
 - Check **Settings → VPN → Allowed servers…**. The VPN's server must be there with an IP. A host name
-  that shows *IP not known yet* was never looked up while DNS worked: connect once on a trusted
-  network (or pause), then try again.
-- The VPN server's IP changed (dynamic DNS) while you were away: pause, let VPN Guard look it up again,
-  resume.
+  that shows *IP not known yet* could not be looked up: check the log for "Could not look up VPN
+  server". If the network's DNS does not answer, pause for a minute, then resume.
+- You are **at the office or at home and the network is not trusted yet**: a VPN to your own office
+  usually cannot connect from inside it. Trust the network.
 - L2TP: connect it once from System Settings so macOS saves the password.
 
 ## WireGuard says "Waiting for the server to answer"

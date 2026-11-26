@@ -23,7 +23,10 @@ public enum PFRules {
     /// and traffic to the VPN servers may use a real network card. Everything else,
     /// IPv6 included, is refused. Inputs are validated again here, so nothing odd can
     /// reach pfctl.
-    public static func lockRules(vpnServers: [String], routers: [String], interfaces: [String]) -> String {
+    /// `dnsLookupPort`: also let DNS out from that one source port. The helper adds it only for the
+    /// second or two its own lookup runs (pf on macOS ignores `user root` here, so time is the guard).
+    public static func lockRules(vpnServers: [String], routers: [String], interfaces: [String],
+                                 dnsLookupPort: UInt16? = nil) -> String {
         let servers = vpnServers.filter(Net.isIPv4).uniqued()
         let gateways = routers.filter(Net.isIPv4).uniqued()
         let insideMac = (["lo0"] + preallowedTunnels + interfaces.filter { Net.isValidInterfaceName($0) && Net.isInternal($0) }).uniqued()
@@ -35,6 +38,9 @@ public enum PFRules {
         r.append("pass in quick inet proto udp from any port 67 to any port 68 no state")
         if !gateways.isEmpty {
             r.append("pass out quick inet proto icmp from any to { \(gateways.joined(separator: " ")) } icmp-type echoreq keep state")
+        }
+        if let port = dnsLookupPort, port >= 1024 {
+            r.append("pass out quick inet proto udp from any port \(port) to any port 53 keep state")
         }
         if !servers.isEmpty {
             let list = servers.joined(separator: " ")

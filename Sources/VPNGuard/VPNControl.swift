@@ -170,6 +170,16 @@ final class VPNConnection {
         onChange?(s)
     }
 
+    /// Stops a macOS VPN by its service ID if macOS says it is connecting or connected, whatever
+    /// any watcher believes. Used when the user switches to another VPN.
+    static func stopService(_ serviceID: String) {
+        guard let c = SCNetworkConnectionCreateWithServiceID(nil, serviceID as CFString, nil, nil) else { return }
+        switch SCNetworkConnectionGetStatus(c) {
+        case .connecting, .connected: SCNetworkConnectionStop(c, true)
+        default: break
+        }
+    }
+
     /// `linger: true` keeps the VPN up if this app quits.
     @discardableResult
     func start() -> Bool {

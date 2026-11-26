@@ -54,6 +54,10 @@ The goal: **on a network you do not trust, no traffic leaves the Mac outside the
   same router address) could make VPN Guard open the network. They would need to know that address.
 - **Your VPN itself.** VPN Guard makes sure traffic goes into the VPN; what happens after the VPN server
   is up to the VPN.
+- **The helper's own server lookups.** While locked, for about a second each time the helper looks
+  up your VPN server names (when the lock turns on, every 5 minutes, after a VPN failed to connect),
+  DNS questions sent from UDP source port 53530 may leave the Mac. Nothing else does: no other port,
+  no other protocol. The network's DNS server sees the names of your VPN servers.
 - **A short window when joining a network.** The lock follows the network state that macOS publishes,
   which happens within milliseconds, before apps normally start new connections.
 - **Traffic of other VPN apps' own tunnels** is allowed into their tunnel interface, but their outer

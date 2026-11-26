@@ -446,4 +446,128 @@ final class WireGuardTests: XCTestCase {
         let round = try Wire.decode(ClientPins.self, from: Wire.encode(pins))
         XCTAssertEqual(round.validHashes, [good])
     }
+
+    // MARK: - Logic review fixes (1.1.2)
+
+    private func link(_ iface: String, _ addr: String?, _ router: String, _ mac: String?) -> NetworkLink {
+        NetworkLink(interface: iface, displayName: iface == "en0" ? "Wi-Fi" : "USB LAN", address: addr,
+                    routerIP: router, routerMAC: mac)
+    }
+
+    /// Bug 1: switching VPN must not remove another VPN's server, and hand-typed servers stay.
+    func testServerListKeepsAllVPNServersAndManualOnes() {
+        let current = ["198.51.100.7", "vpn.example.com"]           // manual + auto from before
+        let r = ServerList.merge(current: current, previousAuto: ["vpn.example.com"],
+                                 wanted: ["203.0.113.10", "VPN.Example.com.", "home.example.net"])
+        XCTAssertEqual(r.list, ["198.51.100.7", "vpn.example.com", "203.0.113.10", "home.example.net"])
+        XCTAssertEqual(r.auto, ["203.0.113.10", "vpn.example.com", "home.example.net"])
+        // Choosing another VPN only changes the order of `wanted`: nothing is removed or resent.
+        let again = ServerList.merge(current: r.list, previousAuto: r.auto,
+                                     wanted: ["vpn.example.com", "203.0.113.10", "home.example.net"])
+        XCTAssertEqual(again.list, r.list)
+    }
+
+    func testServerListDropsServersOfDeletedVPNsAndBadValues() {
+        let r = ServerList.merge(current: ["198.51.100.7", "old.example.com", "203.0.113.10"],
+                                 previousAuto: ["old.example.com", "203.0.113.10"],
+                                 wanted: ["203.0.113.10", "not a host!", "", "1.2.3.4 } pass all"])
+        XCTAssertEqual(r.list, ["198.51.100.7", "203.0.113.10"])
+        XCTAssertEqual(r.auto, ["203.0.113.10"])
+    }
+
+    func testServerListLimitKeepsTheChosenVPN() {
+        let manual = (1...16).map { "198.51.100.\($0)" }
+        let r = ServerList.merge(current: manual, previousAuto: [], wanted: ["203.0.113.10"])
+        XCTAssertEqual(r.list.count, 16)
+        XCTAssertTrue(r.list.contains("203.0.113.10"), "the chosen VPN's server must survive the limit")
+    }
+
+    /// Bug 1 (helper side): a server that leaves the list keeps its looked-up IP.
+    func testHostCacheSurvivesSwitchingAndIsCapped() {
+        var c = GuardConfig(vpnServers: ["vpn.example.com"], hostIPs: ["vpn.example.com": ["203.0.113.10"]])
+        c.vpnServers = ["198.51.100.20"]          // another VPN chosen
+        c.pruneHostCache()
+        XCTAssertEqual(c.hostIPs["vpn.example.com"], ["203.0.113.10"])
+        XCTAssertEqual(c.allowedIPs, ["198.51.100.20"], "a cached IP is not allowed while unused")
+        c.vpnServers = ["vpn.example.com"]        // chosen again while locked: allowed at once
+        XCTAssertEqual(c.allowedIPs, ["203.0.113.10"])
+
+        for n in 0..<40 { c.hostIPs["h\(n).example.com"] = ["192.0.2.\(n)"] }
+        c.pruneHostCache(keepingAtMost: 32)
+        XCTAssertEqual(c.hostIPs.count, 32)
+        XCTAssertEqual(c.hostIPs["vpn.example.com"], ["203.0.113.10"], "servers in use are never pruned")
+    }
+
+    /// Bug 2: lock mode lets out only root DNS from the helper's port.
+    func testLockRulesDNSLookupRule() {
+        let rules = PFRules.lockRules(vpnServers: ["203.0.113.10"], routers: ["192.0.2.1"], interfaces: [],
+                                      dnsLookupPort: VG.dnsLookupPort)
+        XCTAssertTrue(rules.contains("pass out quick inet proto udp from any port 53530 to any port 53 keep state"))
+        let dnsLines = rules.split(separator: "\n").filter { $0.contains("port 53 ") || $0.hasSuffix("port 53") }
+        XCTAssertEqual(dnsLines.count, 1, "no other DNS may pass")
+        XCTAssertFalse(PFRules.lockRules(vpnServers: [], routers: [], interfaces: []).contains("port 53"))
+        XCTAssertFalse(PFRules.lockRules(vpnServers: [], routers: [], interfaces: [], dnsLookupPort: 53).contains("port 53 keep"),
+                       "a low port is refused")
+        let lines = rules.split(separator: "\n").map(String.init)
+        XCTAssertLessThan(lines.firstIndex { $0.contains("port 53530") }!, lines.firstIndex { $0.hasPrefix("block return out") }!)
+    }
+
+    /// The generated rules must be valid pf syntax (macOS's own parser, no root needed).
+    func testLockRulesParseWithPfctl() throws {
+        let rules = PFRules.lockRules(vpnServers: ["203.0.113.10", "198.51.100.20"], routers: ["192.0.2.1"],
+                                      interfaces: ["bridge100", "vmenet0"], dnsLookupPort: VG.dnsLookupPort)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
+        p.arguments = ["-n", "-f", "-"]
+        let input = Pipe(), output = Pipe()
+        p.standardInput = input
+        p.standardOutput = output
+        p.standardError = output
+        try p.run()
+        input.fileHandleForWriting.write(Data(rules.utf8))
+        try input.fileHandleForWriting.close()
+        p.waitUntilExit()
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(p.terminationStatus, 0, "pfctl rejected the rules:\n\(text)\n\(rules)")
+    }
+
+    /// Bug 4: a router address that stays unknown still starts the VPN, after a short grace.
+    func testAutoVPNStartsWhenRouterStaysUnknown() {
+        XCTAssertTrue(AutoVPN.wantsVPN(mode: .locked, reason: .untrusted, resolvingFor: 0))
+        XCTAssertFalse(AutoVPN.wantsVPN(mode: .locked, reason: .resolving, resolvingFor: 1))
+        XCTAssertTrue(AutoVPN.wantsVPN(mode: .locked, reason: .resolving, resolvingFor: 5))
+        XCTAssertFalse(AutoVPN.wantsVPN(mode: .locked, reason: .noNetwork, resolvingFor: 60))
+        XCTAssertFalse(AutoVPN.wantsVPN(mode: .open, reason: .trusted, resolvingFor: 0))
+        XCTAssertFalse(AutoVPN.wantsVPN(mode: .open, reason: .disabled, resolvingFor: 0))
+    }
+
+    /// Bug 6: one router seen over Wi-Fi and a cable is one trusted entry.
+    func testTrustOneEntryPerRouter() {
+        let mac = "aa:bb:cc:00:11:22"
+        let same = TrustedNetwork.newEntries(name: "Office", candidates: [
+            link("en0", "192.0.2.43", "192.0.2.1", mac), link("en7", "192.0.2.46", "192.0.2.1", "AA:BB:CC:00:11:22"),
+        ])
+        XCTAssertEqual(same.map(\.name), ["Office"])
+        XCTAssertEqual(same.first?.routerMAC, mac)
+        let two = TrustedNetwork.newEntries(name: "Office", candidates: [
+            link("en0", "192.0.2.43", "192.0.2.1", mac), link("en7", "198.51.100.5", "198.51.100.1", "aa:bb:cc:00:11:33"),
+            link("en8", "203.0.113.5", "203.0.113.1", nil),
+        ])
+        XCTAssertEqual(two.map(\.name), ["Office (Wi-Fi)", "Office (USB LAN)"])
+    }
+
+    /// Bug 7: restart a PPP VPN only when the network it used is gone and another one is up.
+    func testPPPRestartWhenNetworkMovedAway() {
+        let hotspot = link("en0", "172.20.10.6", "172.20.10.1", "aa:bb:cc:00:00:01")
+        let on = Set([AutoVPN.linkKey(hotspot)])
+        XCTAssertFalse(AutoVPN.networkMovedAway(connectedOn: on, links: [hotspot]))
+        XCTAssertFalse(AutoVPN.networkMovedAway(connectedOn: on, links: []), "no network: wait, it may come back")
+        XCTAssertFalse(AutoVPN.networkMovedAway(connectedOn: on, links: [hotspot, link("en7", "192.0.2.46", "192.0.2.1", nil)]))
+        XCTAssertTrue(AutoVPN.networkMovedAway(connectedOn: on, links: [link("en0", "172.20.10.9", "172.20.10.1", "aa:bb:cc:00:00:01")]),
+                      "new address on the same Wi-Fi: the tunnel is dead")
+        XCTAssertTrue(AutoVPN.networkMovedAway(connectedOn: on, links: [link("en0", "192.0.2.43", "192.0.2.1", nil)]))
+        XCTAssertFalse(AutoVPN.networkMovedAway(connectedOn: [], links: [hotspot]))
+        XCTAssertTrue(AutoVPN.isPPP(kind: "L2TP"))
+        XCTAssertFalse(AutoVPN.isPPP(kind: "VPN"), "IKEv2 moves to a new network by itself")
+    }
 }

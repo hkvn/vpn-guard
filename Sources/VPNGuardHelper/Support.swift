@@ -81,11 +81,26 @@ struct ConfigStore {
 /// so we always get the real answer, not our own pinned one. While locked with the VPN down,
 /// the query is blocked by pf (nothing leaks) and we keep the last good answer.
 enum DNS {
-    static func lookup(_ host: String) -> [String] {
-        guard Net.isHostName(host) else { return [] }
-        let r = Shell.run("/usr/bin/dig", ["+short", "+time=2", "+tries=1", "A", host])
-        guard r.ok else { return [] }
-        return r.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter(Net.isIPv4).uniqued()
+    /// Asks the DNS servers directly (not our own answerer). The fixed source port is the one lock
+    /// mode lets out for root (`VG.dnsLookupPort`), so this works while everything else is blocked.
+    /// `fixedPortOnly`: while locked only the fixed port can get out, so don't try another one.
+    static func lookup(_ host: String, fixedPortOnly: Bool) -> (ips: [String], problem: String?) {
+        guard Net.isHostName(host) else { return ([], "not a host name") }
+        let first = query(host, ["-b", "0.0.0.0#\(VG.dnsLookupPort)"])
+        if !first.ips.isEmpty || fixedPortOnly { return first }
+        // Port busy, or no answer: one more try from any port (fine while not locked).
+        let second = query(host, [])
+        return second.ips.isEmpty ? ([], first.problem ?? second.problem) : second
+    }
+
+    private static func query(_ host: String, _ extra: [String]) -> (ips: [String], problem: String?) {
+        let r = Shell.run("/usr/bin/dig", ["-4"] + extra + ["+short", "+time=2", "+tries=1", "A", host])
+        let lines = r.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let ips = r.ok ? lines.filter(Net.isIPv4).uniqued() : []
+        if !ips.isEmpty { return (ips, nil) }
+        let note = lines.first { $0.hasPrefix(";;") || $0.lowercased().contains("error") }?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "; ")).prefix(120)
+        return ([], note.map(String.init) ?? (r.ok ? "no IPv4 address" : "dig failed"))
     }
 }
 

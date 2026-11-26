@@ -140,15 +140,20 @@ them, but cannot check their settings.
 ### Server host names
 
 If your VPN server is a host name (like `vpn.example.com`) rather than an IP address, VPN Guard looks
-up its IP while DNS still works and lets that IP through the firewall. While blocked, DNS is off, so
-VPN Guard answers that one name itself, on your Mac, with the IP it saved. The lookup is refreshed
-every 10 minutes. You can see the list in Settings → VPN → **Allowed servers…**
+up its IP and lets that IP through the firewall. While blocked, DNS is off for your apps, so VPN Guard
+answers that one name itself, on your Mac, with the IP it saved.
+
+The servers of **all** your VPNs are in the list, not only the one you chose, so switching VPN while
+blocked works at once. VPN Guard looks the names up again when the lock turns on or off, every few
+minutes, and right after a VPN fails to connect, so a home server whose IP changes (dynamic DNS) is
+found again even while you are blocked. You can see the list in Settings → VPN → **Allowed servers…**
 
 ### Automatic
 
 - **Connect by itself on untrusted networks.** VPN Guard starts your VPN when the network is not
   trusted, and tries again with growing pauses if it fails. If you disconnect it yourself, it waits
-  until you change network.
+  until you change network. When you move to another network, an L2TP VPN is restarted at once
+  (macOS alone would keep a dead connection for up to 80 seconds).
 - **Disconnect when I join a trusted network.** Once, on arrival. You can connect again by hand.
 
 Only one VPN runs at a time: choosing another VPN disconnects the old one.

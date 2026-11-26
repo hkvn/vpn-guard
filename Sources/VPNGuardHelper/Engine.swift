@@ -25,6 +25,13 @@ final class Engine {
     private var appliedMode: GuardMode?
     private var appliedRules: String?
     private var firewallError: String?
+    /// Set if pfctl ever rejects the DNS lookup rule: from then on we lock without it.
+    private var dnsRuleRejected = false
+    /// True only while the helper's own server lookup runs: then lock mode lets DNS out from
+    /// `VG.dnsLookupPort` (and nothing else). Closed again when the lookup is done.
+    private var dnsWindowOpen = false
+    /// Links of the latest evaluation (the published status can be one step behind).
+    private var currentLinks: [NetworkLink] = []
     private(set) var status: GuardStatus
     private var hasPublished = false
 
@@ -39,6 +46,8 @@ final class Engine {
 
     // VPN server host names -> IPs.
     private var hostRefreshRunning = false
+    private var hostRefreshPending = false
+    private var lastLookupProblem: String?
     private var lastHostRefresh = Date.distantPast
 
     static let safetyInterval: TimeInterval = 30
@@ -143,8 +152,12 @@ final class Engine {
             links[i].trustedName = config.trustedNetwork(matchingMAC: links[i].routerMAC)?.name
         }
 
+        currentLinks = links
         let decision = Policy.decide(config: config, links: links, now: now)
+        let modeBefore = appliedMode
         apply(decision.mode, links: links)
+        // Locked or unlocked just now: check the VPN server names at once (bug: up to 45 s wait).
+        if modeBefore != nil, appliedMode != modeBefore { refreshHosts(force: true) }
         // After apply(): the firewall already lets the WireGuard server through.
         ensureWireGuard(links: links)
         // After apply(): in lock mode the ping to the router is only allowed once the rules include it.
@@ -167,16 +180,29 @@ final class Engine {
             firewallError = nil
 
         case .locked:
-            let rules = PFRules.lockRules(vpnServers: config.allowedIPs,
-                                          routers: links.map(\.routerIP),
-                                          interfaces: Interfaces.names())
-            guard appliedMode != .locked || rules != appliedRules else { return }
+            func rules(withDNS: Bool) -> String {
+                PFRules.lockRules(vpnServers: config.allowedIPs,
+                                  routers: links.map(\.routerIP),
+                                  interfaces: Interfaces.names(),
+                                  dnsLookupPort: withDNS ? VG.dnsLookupPort : nil)
+            }
+            var wanted = rules(withDNS: dnsWindowOpen && !dnsRuleRejected)
+            guard appliedMode != .locked || wanted != appliedRules else { return }
             if !firewall.isEnabled() { firewall.enable() }
-            if let err = firewall.load(rules) {
+            var loadError = firewall.load(wanted)
+            if let err = loadError, !dnsRuleRejected {
+                // Never let the extra rule cost us the lock itself.
+                Log.error("pf rejected the lock rules with the DNS lookup rule (\(err)); locking without it")
+                dnsRuleRejected = true
+                wanted = rules(withDNS: false)
+                loadError = firewall.load(wanted)
+            }
+            if let err = loadError {
                 firewallError = err
                 Log.error(err)
                 return
             }
+            let rules = wanted
             let wasLocked = appliedMode == .locked
             appliedMode = .locked
             appliedRules = rules
@@ -336,26 +362,56 @@ final class Engine {
 
     // MARK: - VPN server host names
 
-    /// Looks up host-name servers off the queue. Every 10 min, or every 30 s while one has no IP yet.
+    /// Looks up host-name servers off the queue: every 30 s while one has no IP yet, every 5 min while
+    /// locked (works thanks to the DNS lookup rule), otherwise every 10 min; `force` for right now.
     private func refreshHosts(force: Bool = false) {
         let hosts = config.serverHosts.filter(Net.isHostName)
-        guard !hosts.isEmpty, !hostRefreshRunning else { return }
+        guard !hosts.isEmpty else { return }
+        guard !hostRefreshRunning else {
+            // Asked while one runs (e.g. a new server added): run again right after, don't drop it.
+            if force { hostRefreshPending = true }
+            return
+        }
         let missing = hosts.contains { (config.hostIPs[$0] ?? []).isEmpty }
-        guard force || Date().timeIntervalSince(lastHostRefresh) >= (missing ? 30 : 600) else { return }
+        let interval: TimeInterval = missing ? 30 : (appliedMode == .locked ? 300 : 600)
+        guard force || Date().timeIntervalSince(lastHostRefresh) >= interval else { return }
         hostRefreshRunning = true
         lastHostRefresh = Date()
+        let locked = appliedMode == .locked
+        if locked { setDNSWindow(open: true) }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var answers: [String: [String]] = [:]
+            var problems: [String] = []
             for host in hosts {
-                let ips = DNS.lookup(host)
-                if !ips.isEmpty { answers[host] = ips.sorted() }
+                let r = DNS.lookup(host, fixedPortOnly: locked)
+                if r.ips.isEmpty { problems.append("\(host): \(r.problem ?? "no answer")") } else { answers[host] = r.ips.sorted() }
             }
-            self?.queue.async { self?.finishHostRefresh(answers) }
+            self?.queue.async { self?.finishHostRefresh(answers, problems: problems, locked: locked) }
         }
     }
 
-    private func finishHostRefresh(_ answers: [String: [String]]) {
+    /// Opens or closes lock mode's DNS lookup rule right now (only matters while locked).
+    private func setDNSWindow(open: Bool) {
+        guard dnsWindowOpen != open else { return }
+        dnsWindowOpen = open
+        if appliedMode == .locked { apply(.locked, links: currentLinks) }
+    }
+
+    private func finishHostRefresh(_ answers: [String: [String]], problems: [String], locked: Bool) {
         hostRefreshRunning = false
+        setDNSWindow(open: false)
+        let problem = problems.isEmpty ? nil : "\(locked ? "while locked: " : "")\(problems.joined(separator: "; "))"
+        if problem != lastLookupProblem {
+            if let problem { Log.error("Could not look up VPN server \(problem)") }
+            else if lastLookupProblem != nil { Log.info("VPN server names look up fine again") }
+            lastLookupProblem = problem
+        }
+        defer {
+            if hostRefreshPending {
+                hostRefreshPending = false
+                refreshHosts(force: true)
+            }
+        }
         var changed = false
         for (host, ips) in answers where config.serverHosts.contains(host) && config.hostIPs[host] != ips {
             Log.info("VPN server \(host) is \(ips.joined(separator: ", "))")
@@ -411,12 +467,10 @@ final class Engine {
             guard candidates.allSatisfy({ $0.routerMAC != nil }) else {
                 throw CommandError(message: "The router's hardware address is not known yet. Try again in a few seconds.")
             }
-            let name = Self.cleanName(rawName)
-            for link in candidates {
-                guard let mac = link.routerMAC else { continue }
-                let label = candidates.count > 1 ? "\(name) (\(link.label))" : name
-                config.trusted.append(TrustedNetwork(name: label, routerMAC: mac, routerIP: link.routerIP))
-                Log.info("Trusted \(label): router \(link.routerIP) \(mac)")
+            // One entry per router, even if the Mac reaches it over Wi-Fi and a cable.
+            for entry in TrustedNetwork.newEntries(name: Self.cleanName(rawName), candidates: candidates) {
+                config.trusted.append(entry)
+                Log.info("Trusted \(entry.name): router \(entry.routerIP ?? "?") \(entry.routerMAC)")
             }
             persist()
             evaluate("trusted")
@@ -465,11 +519,16 @@ final class Engine {
             }
             guard cleaned.count <= 16 else { throw CommandError(message: "Use 16 servers or fewer.") }
             config.vpnServers = cleaned.uniqued()
-            config.hostIPs = config.hostIPs.filter { config.serverHosts.contains($0.key) }
+            // Keep looked-up IPs of servers that left the list: they are a cache (bug: switching VPN
+            // while locked deleted the IP, and DNS was blocked, so the VPN could not connect).
+            config.pruneHostCache()
             Log.info("VPN servers: \(config.vpnServers.joined(separator: ", "))")
             persist()
             syncPinnedNames()
             evaluate("servers changed")
+            refreshHosts(force: true)
+
+        case .lookUpServers:
             refreshHosts(force: true)
 
         case .wgAdd(let tunnel, let privateKey, let presharedKey):
@@ -507,7 +566,7 @@ final class Engine {
             }
             if config.wgActive == id { config.wgActive = nil }
             config.wireguard.removeAll { $0.id == id }
-            config.hostIPs = config.hostIPs.filter { config.serverHosts.contains($0.key) }
+            config.pruneHostCache()
             var keys = wgKeys.load()
             keys[id] = nil
             try? wgKeys.save(keys)

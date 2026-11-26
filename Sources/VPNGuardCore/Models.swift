@@ -162,6 +162,8 @@ public enum HelperCommand: Codable, Sendable {
     case resume
     case setEnabled(Bool)
     case setVPNServers([String])
+    /// Look up the VPN server names again now (the app asks after a VPN failed to connect).
+    case lookUpServers
     case wgAdd(tunnel: WireGuardTunnel, privateKey: String, presharedKey: String?)
     case wgRemove(id: UUID)
     case wgConnect(id: UUID)

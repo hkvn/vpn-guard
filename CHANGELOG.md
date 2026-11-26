@@ -2,6 +2,25 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.1.2 — 2026-11-26
+
+Fixes from a logic review after a real "the VPN does not reconnect" report.
+
+### Fixed
+- **Switching VPN while blocked could make the VPN unable to connect** until protection was turned
+  off: the saved IP of a host-name server was deleted, and DNS was blocked. Now the servers of all
+  your VPNs stay allowed, and saved IPs are kept.
+- **VPN server names can be looked up while blocked**, so a new VPN or a home server whose IP changed
+  (dynamic DNS) connects without turning protection off. The firewall lets the helper's own DNS
+  lookup out from one port for about a second, then closes it again.
+- Server names are looked up at once when the lock turns on or off (it took up to a minute), and a
+  lookup asked for during another one is no longer dropped.
+- If the router's hardware address stays unknown (some USB or 4G modems), the VPN now starts after
+  5 seconds instead of never.
+- Choosing another VPN quickly now always stops the one that was still connecting.
+- Trusting a network seen over Wi-Fi and a cable at the same time makes one entry, not two.
+- An L2TP VPN is restarted at once when you move to another network, instead of after up to 80 s.
+
 ## 1.1.1 — 2026-11-26
 
 ### Added

@@ -122,14 +122,24 @@ block drop in quick all
 
 ## VPN servers by host name
 
-The allowed-server list (`GuardConfig.serverHosts`) holds the chosen macOS VPN's server and every
-WireGuard endpoint. IPs go straight into the rules. For host names:
+The allowed-server list (`GuardConfig.serverHosts`) holds the servers of **every** macOS VPN (the app
+keeps it in step with System Settings, `ServerList.merge`; servers typed by hand stay), every
+WireGuard endpoint, and nothing else. So switching VPN while locked never removes a server. IPs go
+straight into the rules. For host names:
 
-1. The helper looks them up with `dig` (directly against DNS, ignoring local overrides) at start,
-   when the list changes, and every 10 minutes (every 30 s while one has no IP yet). While locked with
-   the VPN down, that query is blocked by pf, and the last good answer is kept.
-2. The IPs are allowed in the rules (`GuardConfig.allowedIPs`).
-3. A tiny DNS answerer in the helper listens on `127.0.0.1:53535` and answers **only** those names
+1. The helper looks them up with `dig -4 -b 0.0.0.0#53530` (directly against DNS, ignoring local
+   overrides): at start, when the list changes, when the lock turns on or off, when the app reports a
+   VPN that failed to connect (`lookUpServers`), every 30 s while one has no IP, every 5 min while
+   locked, otherwise every 10 min. A request that arrives during a lookup runs right after it.
+2. **While locked**, the helper adds `pass out quick inet proto udp from any port 53530 to any port
+   53 keep state` to the rules only for the duration of its own lookup (normally under a second),
+   then removes it. pf on macOS does not apply `user root` to these packets (measured), so time is
+   the guard. If pfctl ever rejects the line, the helper locks without it and logs that. Failed
+   lookups are logged ("Could not look up VPN server …").
+3. Looked-up IPs are a cache (`GuardConfig.hostIPs`): a server leaving the list keeps its IP (capped
+   at 32 names), so choosing it again works at once. The IPs of listed servers are allowed in the
+   rules (`GuardConfig.allowedIPs`).
+4. A tiny DNS answerer in the helper listens on `127.0.0.1:53535` and answers **only** those names
    (type A with the saved IPs; other names get NXDOMAIN). A file `/etc/resolver/<host>` tells
    mDNSResponder to ask it for that one name. So the VPN client can find its server while all other
    DNS is blocked, and nothing leaves the Mac. `/etc/hosts` is never touched.
@@ -180,8 +190,15 @@ once; the profile file is readable only by the user and deleted after 10 minutes
 - All binaries are signed with the hardened runtime, so the pinned processes cannot be injected into.
 - **Push updates:** the helper posts the Darwin notification `local.vpnguard.status` when its state
   changes; the app then fetches the status. The app also refreshes every 10 s.
-- **Auto VPN** lives in the app: on an untrusted network it starts the chosen VPN (with back-off), and
-  on arrival at a trusted network it stops it once.
+- **Auto VPN** lives in the app (decisions in Core `AutoVPN`, unit tested):
+  - locked because a network is untrusted, or because a router's hardware address is still unknown
+    after 5 s: start the chosen VPN (back-off 0, 5, 15, 30, 60 s);
+  - an L2TP/PPTP VPN whose network (card + address + router) is gone while another network is up:
+    restart it at once (macOS waits up to 80 s); with no network at all it waits;
+  - a macOS VPN that failed to connect: ask the helper to look the server names up again;
+  - arrival at a trusted network: stop it once;
+  - switching VPN stops the old one by asking macOS directly (`stopService`), not the watcher.
+- **Trusting** makes one entry per router (`TrustedNetwork.newEntries`), even over Wi-Fi + cable.
 
 ## The app
 

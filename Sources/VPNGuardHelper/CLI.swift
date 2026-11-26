@@ -247,7 +247,12 @@ enum CLI {
 
     private static func rules() -> Int32 {
         let servers = ConfigStore().load().allowedIPs
-        print(PFRules.lockRules(vpnServers: servers, routers: currentLinks().map(\.routerIP), interfaces: Interfaces.names()), terminator: "")
+        let routers = currentLinks().map(\.routerIP)
+        print(PFRules.lockRules(vpnServers: servers, routers: routers, interfaces: Interfaces.names()), terminator: "")
+        let withDNS = PFRules.lockRules(vpnServers: servers, routers: routers, interfaces: [], dnsLookupPort: VG.dnsLookupPort)
+        if let line = withDNS.split(separator: "\n").first(where: { $0.contains("port \(VG.dnsLookupPort)") }) {
+            print("# Only while the helper looks up VPN server names (about a second), it adds:\n# \(line)")
+        }
         return 0
     }
 }
