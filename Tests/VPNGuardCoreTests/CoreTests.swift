@@ -712,4 +712,51 @@ final class WireGuardTests: XCTestCase {
         XCTAssertEqual(TrustPick.defaultTicks([wifi, phone], primaryInterface: "en7"), [], "a hotspot is never ticked for you")
         XCTAssertEqual(TrustPick.defaultTicks([phone], primaryInterface: "en0"), [], "the network in use is trusted already")
     }
+
+    // MARK: - NAT64 networks (1.2.1)
+
+    /// RFC 6052 section 2.4 examples (192.0.2.33 in each prefix length).
+    func testNAT64SynthesisMatchesRFC6052() {
+        let v4 = "192.0.2.33"
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "2001:db8::/32"), "2001:db8:c000:221::")
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "2001:db8:100::/40"), "2001:db8:1c0:2:21::")
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "2001:db8:122::/48"), "2001:db8:122:c000:2:2100::")
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "2001:db8:122:300::/56"), "2001:db8:122:3c0:0:221::")
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "2001:db8:122:344::/64"), "2001:db8:122:344:c0:2:2100:0")
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "2001:db8:122:344::/96"), "2001:db8:122:344::c000:221")
+        XCTAssertEqual(NAT64.synthesize(ipv4: v4, prefix: "64:ff9b::/96"), "64:ff9b::c000:221", "the well-known prefix")
+    }
+
+    func testNAT64RejectsBadInput() {
+        XCTAssertNil(NAT64.synthesize(ipv4: "192.0.2.33", prefix: "64:ff9b::/80"), "not an RFC 6052 length")
+        XCTAssertNil(NAT64.synthesize(ipv4: "192.0.2.33", prefix: "64:ff9b::"))
+        XCTAssertNil(NAT64.synthesize(ipv4: "vpn.example.com", prefix: "64:ff9b::/96"))
+        XCTAssertNil(NAT64.synthesize(ipv4: "192.0.2.33", prefix: "64:ff9b::/96; pass all"))
+        XCTAssertEqual(NAT64.serverAddresses(["192.0.2.33", "198.51.100.20"], prefixes: ["64:ff9b::/96"]),
+                       ["64:ff9b::c000:221", "64:ff9b::c633:6414"])
+    }
+
+    func testLockRulesAllowVPNServerOverNAT64Only() {
+        let six = NAT64.serverAddresses(["203.0.113.10"], prefixes: ["64:ff9b::/96"])
+        let rules = PFRules.lockRules(vpnServers: ["203.0.113.10"], routers: ["172.20.10.1"], interfaces: [],
+                                      vpnServers6: six + ["not-an-address } pass all"])
+        XCTAssertTrue(rules.contains("pass out quick inet6 from any to { 64:ff9b::cb00:710a } no state"))
+        XCTAssertTrue(rules.contains("pass in quick inet6 from { 64:ff9b::cb00:710a } to any no state"))
+        XCTAssertTrue(rules.contains("icmp6-type { routersol routeradv neighbrsol neighbradv }"))
+        XCTAssertFalse(rules.contains("pass all"))
+        XCTAssertFalse(PFRules.lockRules(vpnServers: ["203.0.113.10"], routers: [], interfaces: []).contains("inet6"),
+                       "without NAT64 all IPv6 stays blocked")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
+        p.arguments = ["-n", "-f", "-"]
+        let input = Pipe(), output = Pipe()
+        p.standardInput = input
+        p.standardOutput = output
+        p.standardError = output
+        try? p.run()
+        input.fileHandleForWriting.write(Data(rules.utf8))
+        try? input.fileHandleForWriting.close()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0, String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+    }
 }

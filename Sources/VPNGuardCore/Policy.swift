@@ -34,7 +34,7 @@ public enum PFRules {
     /// `openInterfaces`: trusted cards while another card is not (reason `mixed`): they work as normal.
     public static func lockRules(vpnServers: [String], routers: [String], interfaces: [String],
                                  dnsLookupPort: UInt16? = nil, refuse: Bool = true,
-                                 openInterfaces: [String] = []) -> String {
+                                 openInterfaces: [String] = [], vpnServers6: [String] = []) -> String {
         let servers = vpnServers.filter(Net.isIPv4).uniqued()
         let gateways = routers.filter(Net.isIPv4).uniqued()
         let insideMac = (["lo0"] + preallowedTunnels + interfaces.filter { Net.isValidInterfaceName($0) && Net.isInternal($0) }).uniqued()
@@ -58,6 +58,15 @@ public enum PFRules {
             let list = servers.joined(separator: " ")
             r.append("pass out quick inet from any to { \(list) } no state")
             r.append("pass in quick inet from { \(list) } to any no state")
+        }
+        // NAT64 networks: the VPN servers' IPv6 form (see NAT64), plus IPv6 neighbor discovery, which
+        // stays on the local network and is needed to reach the router at all. All other IPv6 stays blocked.
+        let servers6 = vpnServers6.filter(Net.isIPv6).uniqued()
+        if !servers6.isEmpty {
+            let list = servers6.joined(separator: " ")
+            r.append("pass quick inet6 proto icmp6 all icmp6-type { routersol routeradv neighbrsol neighbradv } no state")
+            r.append("pass out quick inet6 from any to { \(list) } no state")
+            r.append("pass in quick inet6 from { \(list) } to any no state")
         }
         r.append(refuse ? "block return out quick all" : "block drop out quick all")
         r.append("block drop in quick all")

@@ -35,6 +35,8 @@ final class Engine {
     private var currentReason: GuardReason = .disabled
     /// The card macOS sends traffic through (netstat / service order), when there are several.
     private var currentPrimary: String?
+    /// NAT64 prefixes of the current networks (phone hotspots on IPv6 carriers).
+    private var currentNAT64: [String] = []
     private var lastNetworksKey = ""
     private(set) var status: GuardStatus
     private var hasPublished = false
@@ -106,6 +108,7 @@ final class Engine {
             "State:/Network/Service/[^/]+/DNS",
             "State:/Network/Interface/[^/]+/IPv4",
             "State:/Network/Interface/[^/]+/Link",
+            "State:/Network/Interface/[^/]+/NAT64",
         ] as CFArray
         if !SCDynamicStoreSetNotificationKeys(store, keys, patterns) || !SCDynamicStoreSetDispatchQueue(store, queue) {
             Log.error("Could not subscribe to network changes")
@@ -175,6 +178,7 @@ final class Engine {
 
         currentLinks = links
         currentPrimary = links.count > 1 ? NetworkProbe.primaryLink(links, store: dynamicStore)?.interface : links.first?.interface
+        currentNAT64 = NetworkProbe.nat64Prefixes(links, store: dynamicStore)
         let networksKey = links.map { "\($0.interface)|\($0.routerIP)|\($0.routerMAC ?? "")" }.sorted().joined(separator: ",")
         let networksChanged = networksKey != lastNetworksKey
         lastNetworksKey = networksKey
@@ -217,7 +221,8 @@ final class Engine {
                                   interfaces: Interfaces.names(),
                                   dnsLookupPort: withDNS ? VG.dnsLookupPort : nil,
                                   refuse: refuse,
-                                  openInterfaces: currentReason == .mixed ? links.filter { $0.trustedName != nil }.map(\.interface) : [])
+                                  openInterfaces: currentReason == .mixed ? links.filter { $0.trustedName != nil }.map(\.interface) : [],
+                                  vpnServers6: NAT64.serverAddresses(config.allowedIPs, prefixes: currentNAT64))
             }
             var wanted = rules(withDNS: dnsWindowOpen && !dnsRuleRejected)
             guard appliedMode != .locked || wanted != appliedRules else { return }

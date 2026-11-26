@@ -173,3 +173,39 @@ public enum TrustPick {
         return [mac]
     }
 }
+
+// MARK: - NAT64 networks (1.2.1)
+
+/// On an IPv6 network with NAT64 (many phone hotspots), macOS turns a server's IPv4 address into an
+/// IPv6 one inside the network's NAT64 prefix (64:ff9b::c000:221 for 192.0.2.33). The lock must let
+/// the VPN server through under that address too, or the VPN cannot connect.
+public enum NAT64 {
+    /// RFC 6052 section 2.2: the IPv4 address embedded in an IPv6 prefix of length 32, 40, 48, 56, 64
+    /// or 96 (bits 64-71 stay zero). `prefix` is "64:ff9b::/96". Nil for anything invalid.
+    public static func synthesize(ipv4: String, prefix: String) -> String? {
+        let parts = prefix.split(separator: "/")
+        guard parts.count == 2, let length = Int(parts[1]), [32, 40, 48, 56, 64, 96].contains(length),
+              Net.isIPv4(ipv4) else { return nil }
+        var v6 = in6_addr()
+        var v4 = in_addr()
+        guard inet_pton(AF_INET6, String(parts[0]), &v6) == 1, inet_pton(AF_INET, ipv4, &v4) == 1 else { return nil }
+        var bytes = withUnsafeBytes(of: &v6) { Array($0) }
+        let four = withUnsafeBytes(of: &v4) { Array($0) }
+        // Where the four IPv4 bytes go for each prefix length (byte 8 is the zero "u" octet).
+        let slots: [Int: [Int]] = [32: [4, 5, 6, 7], 40: [5, 6, 7, 9], 48: [6, 7, 9, 10],
+                                   56: [7, 9, 10, 11], 64: [9, 10, 11, 12], 96: [12, 13, 14, 15]]
+        for i in (length / 8)..<16 { bytes[i] = 0 }
+        for (b, slot) in zip(four, slots[length]!) { bytes[slot] = b }
+        var out = in6_addr()
+        withUnsafeMutableBytes(of: &out) { $0.copyBytes(from: bytes) }
+        var text = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        guard inet_ntop(AF_INET6, &out, &text, socklen_t(INET6_ADDRSTRLEN)) != nil else { return nil }
+        let result = String(cString: text)
+        return Net.isIPv6(result) ? result : nil
+    }
+
+    /// The IPv6 forms of all `servers` (IPv4) for all `prefixes`.
+    public static func serverAddresses(_ servers: [String], prefixes: [String]) -> [String] {
+        prefixes.flatMap { p in servers.compactMap { synthesize(ipv4: $0, prefix: p) } }.uniqued()
+    }
+}

@@ -110,6 +110,9 @@ block drop in quick all
 
 - Tunnels and local VM bridges are passed because whatever they send to the internet leaves through
   a real interface later, where it is filtered. Any new tunnel interface triggers a rule rebuild.
+- On NAT64 networks (macOS publishes the prefix in `State:/Network/Interface/<card>/NAT64`), the VPN
+  servers are also allowed under their IPv6 form (`NAT64.synthesize`, RFC 6052), with ICMPv6 router and
+  neighbor messages. macOS uses that form when it connects through such a network.
 - In `mixed`, a line `pass quick on { <trusted cards> } all no state` comes right after the first one,
   so those cards work as normal while the untrusted ones stay VPN only. When the lock starts, pf states
   are flushed only on the untrusted cards (`pfctl -i <card> -F states`). The app starts the VPN in

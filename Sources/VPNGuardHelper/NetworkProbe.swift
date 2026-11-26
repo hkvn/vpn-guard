@@ -37,6 +37,20 @@ enum NetworkProbe {
         return byInterface.values.sorted { $0.interface < $1.interface }
     }
 
+    /// NAT64 prefixes macOS found on these cards ("64:ff9b::/96"), from State:/Network/Interface/<if>/NAT64.
+    static func nat64Prefixes(_ links: [NetworkLink], store: SCDynamicStore?) -> [String] {
+        guard let store else { return [] }
+        return links.flatMap { link -> [String] in
+            let key = "State:/Network/Interface/\(link.interface)/NAT64" as CFString
+            guard let d = SCDynamicStoreCopyValue(store, key) as? [String: Any],
+                  let list = d["PrefixList"] as? [String] else { return [] }
+            return list.filter { p in
+                let parts = p.split(separator: "/")
+                return parts.count == 2 && Net.isIPv6(String(parts[0])) && Int(parts[1]) != nil
+            }
+        }.uniqued()
+    }
+
     /// The network macOS really uses for the internet. Not simply the first card by name: with
     /// Wi-Fi + cable, en0 may not be the one with the default route.
     static func primaryLink(_ links: [NetworkLink], store: SCDynamicStore?) -> NetworkLink? {

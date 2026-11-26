@@ -94,7 +94,8 @@ enum DNS {
     }
 
     private static func query(_ host: String, _ extra: [String]) -> (ips: [String], problem: String?) {
-        let r = Shell.run("/usr/bin/dig", ["-4"] + extra + ["+short", "+time=2", "+tries=1", "A", host])
+        // 3 s, 2 tries: DNS through a phone hotspot can be slow for a name it has not seen yet.
+        let r = Shell.run("/usr/bin/dig", ["-4"] + extra + ["+short", "+time=3", "+tries=2", "A", host])
         let lines = r.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         let ips = r.ok ? lines.filter(Net.isIPv4).uniqued() : []
         if !ips.isEmpty { return (ips, nil) }

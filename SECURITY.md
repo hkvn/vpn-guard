@@ -35,7 +35,8 @@ The goal: **on a network you do not trust, no traffic leaves the Mac outside the
 - **Before the VPN connects, while it reconnects, and when it drops.** The firewall blocks everything
   except the VPN server, so apps cannot fall back to the direct connection.
 - **IPv6 leaks.** IPv6 is blocked on real interfaces while locked (many VPNs, including L2TP in macOS,
-  only carry IPv4).
+  only carry IPv4). On NAT64 networks (many phone hotspots) the only exceptions are your VPN servers'
+  NAT64 addresses and IPv6 neighbor discovery, which stays on the local network.
 - **DNS leaks.** DNS to the local network's resolver is blocked while locked. With WireGuard, the
   tunnel's DNS servers are used.
 - **Connections made before the lock** (for example during a pause) are cut when the lock starts.

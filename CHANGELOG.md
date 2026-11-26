@@ -2,6 +2,17 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.2.1 — 2026-11-26
+
+Found in a real test with an iPhone over USB.
+
+### Fixed
+- **VPN failed to connect at first on IPv6 phone hotspots (NAT64).** On many mobile networks macOS reaches
+  the VPN server by an IPv6 address made from its IPv4 one (`64:ff9b::…`). The lock allowed only IPv4,
+  so the first tries failed until macOS used IPv4. Now the VPN servers' NAT64 addresses are allowed,
+  plus IPv6 neighbor discovery on the local network. All other IPv6 stays blocked.
+- Looking up VPN server names waits longer (3 s, 2 tries): DNS through a phone can be slow.
+
 ## 1.2.0 — 2026-11-26
 
 ### Changed
