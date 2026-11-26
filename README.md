@@ -51,6 +51,7 @@ VPN Guard fixes this with one rule:
 - **VPN server by host name** works even while DNS is blocked: VPN Guard answers just that one name
   on your Mac.
 - **Pause** for a few minutes (café login pages), with a countdown.
+- **Menu bar icon in monochrome or color**, and network details (address, router, DNS) in Settings.
 - **Native design** for light and dark mode: menu bar popover with an animated status shield
   (press and hold it to turn protection on or off), Settings window, first-run setup.
 - **Command line tool**: `vpnguard status`, `vpnguard pause 5`, `vpnguard wg up Home`, and more.

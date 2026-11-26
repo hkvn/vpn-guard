@@ -50,6 +50,8 @@ The shield in the menu bar shows the state at a glance:
 Prefer colors? In **Settings → General → Menu bar icon**, choose **Color**: Protected green, Trusted
 blue, Connecting orange, Blocked red, Paused yellow, Off gray, Attention purple.
 
+<img src="images/menubar-icons-light.png" width="500" alt="Menu bar icons: monochrome (top) and color (bottom), on a dark and a light menu bar">
+
 ### The popover
 
 <img src="images/popover-protected-light.png" width="320" alt="Popover: Protected">
@@ -97,6 +99,12 @@ Good to know:
 
   <img src="images/trust-picker-light.png" width="460" alt="Trust which network? dialog">
 - An iPhone hotspot is never trusted unless you trust it yourself.
+
+**Settings → Networks** shows each network you are on: your address, the router and its hardware
+address, DNS servers, since when it is trusted, and whether your internet goes out there. With two
+networks, the one in use is first and framed.
+
+<img src="images/settings-networks-details-light.png" width="620" alt="Settings, Networks: details of the networks you are on">
 
 Manage the list in **Settings → Networks**: ⓘ shows the details, right-click to rename or remove, or
 use the **+ / −** buttons.
