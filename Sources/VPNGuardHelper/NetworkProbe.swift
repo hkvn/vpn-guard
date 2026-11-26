@@ -24,15 +24,36 @@ enum NetworkProbe {
             if (d["ARPResolvedIPAddress"] as? String) == router, let hw = d["ARPResolvedHardwareAddress"] as? String {
                 mac = Net.normalizeMAC(hw)
             }
+            let parts = key.split(separator: "/")
             byInterface[ifname] = NetworkLink(
                 interface: ifname,
                 displayName: InterfaceNames.name(for: ifname),
                 address: (d["Addresses"] as? [String])?.first,
                 routerIP: router,
-                routerMAC: mac
+                routerMAC: mac,
+                serviceID: parts.count >= 4 ? String(parts[3]) : nil
             )
         }
         return byInterface.values.sorted { $0.interface < $1.interface }
+    }
+
+    /// The network macOS really uses for the internet. Not simply the first card by name: with
+    /// Wi-Fi + cable, en0 may not be the one with the default route.
+    static func primaryLink(_ links: [NetworkLink], store: SCDynamicStore?) -> NetworkLink? {
+        guard !links.isEmpty else { return nil }
+        // 1. The system default route, unless it goes through a tunnel (our own WireGuard).
+        let table = Shell.run("/usr/sbin/netstat", ["-rn", "-f", "inet"]).output
+        if let d = Routes.primaryDefault(netstat: table), let l = links.first(where: { $0.interface == d.interface }) {
+            return l
+        }
+        // 2. The user's service order in System Settings -> Network.
+        if let store,
+           let setup = SCDynamicStoreCopyValue(store, "Setup:/Network/Global/IPv4" as CFString) as? [String: Any],
+           let order = setup["ServiceOrder"] as? [String],
+           let l = order.lazy.compactMap({ id in links.first { $0.serviceID == id } }).first {
+            return l
+        }
+        return links.first
     }
 }
 

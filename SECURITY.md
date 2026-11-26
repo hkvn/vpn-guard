@@ -39,6 +39,8 @@ The goal: **on a network you do not trust, no traffic leaves the Mac outside the
 - **DNS leaks.** DNS to the local network's resolver is blocked while locked. With WireGuard, the
   tunnel's DNS servers are used.
 - **Connections made before the lock** (for example during a pause) are cut when the lock starts.
+- **A pause that follows you.** A pause covers only the network where it started; joining any other
+  network ends it at once.
 - **A fake network with your Wi‑Fi name.** Trust is tied to the router's hardware address, not the
   network name.
 - **The app crashing or being quit.** The firewall rules are enforced by the root helper and stay in

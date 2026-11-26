@@ -25,8 +25,10 @@ public enum PFRules {
     /// reach pfctl.
     /// `dnsLookupPort`: also let DNS out from that one source port. The helper adds it only for the
     /// second or two its own lookup runs (pf on macOS ignores `user root` here, so time is the guard).
+    /// `refuse`: answer blocked apps at once (normal lock). `false` drops silently, for the short
+    /// "no network / checking the router" phases, so a Wi-Fi blip does not kill SSH or calls.
     public static func lockRules(vpnServers: [String], routers: [String], interfaces: [String],
-                                 dnsLookupPort: UInt16? = nil) -> String {
+                                 dnsLookupPort: UInt16? = nil, refuse: Bool = true) -> String {
         let servers = vpnServers.filter(Net.isIPv4).uniqued()
         let gateways = routers.filter(Net.isIPv4).uniqued()
         let insideMac = (["lo0"] + preallowedTunnels + interfaces.filter { Net.isValidInterfaceName($0) && Net.isInternal($0) }).uniqued()
@@ -47,7 +49,7 @@ public enum PFRules {
             r.append("pass out quick inet from any to { \(list) } no state")
             r.append("pass in quick inet from { \(list) } to any no state")
         }
-        r.append("block return out quick all")
+        r.append(refuse ? "block return out quick all" : "block drop out quick all")
         r.append("block drop in quick all")
         return r.joined(separator: "\n") + "\n"
     }

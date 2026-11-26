@@ -82,3 +82,67 @@ extension TrustedNetwork {
         }
     }
 }
+
+// MARK: - Network loss and change (1.1.3)
+
+/// The routers a pause was started on. A pause is for one place (a hotel login page): it must not
+/// follow you to the next network.
+public struct PausedNetwork: Codable, Equatable, Sendable {
+    public var routerMACs: [String]
+    public var routerIPs: [String]
+
+    public init(links: [NetworkLink]) {
+        routerMACs = links.compactMap { $0.routerMAC.flatMap(Net.normalizeMAC) }.uniqued()
+        routerIPs = links.map(\.routerIP).uniqued()
+    }
+
+    /// Still the same place? No network at all (a Wi-Fi blip, sleep) keeps the pause. A router we
+    /// know by its hardware address must be one of ours; one we don't know yet must have our IP.
+    public func covers(_ links: [NetworkLink]) -> Bool {
+        links.allSatisfy { link in
+            if let mac = link.routerMAC.flatMap(Net.normalizeMAC) { return routerMACs.contains(mac) }
+            return routerIPs.contains(link.routerIP)
+        }
+    }
+}
+
+extension AutoVPN {
+    /// How long a network may be gone and still count as "the same one" when it comes back:
+    /// your Connect / Disconnect choice survives a Wi-Fi blip or a short sleep.
+    public static let sameNetworkGrace: TimeInterval = 600
+
+    /// Is this a different place, so your Connect / Disconnect choice should be forgotten?
+    /// `key` = the networks now (empty = none), `lastKey` = the last non-empty one,
+    /// `goneFor` = how long there was no network just before (nil = it never went away).
+    public static func isNewNetwork(key: String, lastKey: String, goneFor: TimeInterval?) -> Bool {
+        if key.isEmpty { return false }          // no network: decide when one shows up
+        if key != lastKey { return true }        // another router
+        return (goneFor ?? 0) >= sameNetworkGrace // same router, but away for a long time
+    }
+}
+
+/// Reading the routing table (output of macOS tools; parsed here so it can be tested).
+public enum Routes {
+    /// The system's main IPv4 default route from `netstat -rn -f inet`: the first `default` line
+    /// that is not scoped to one card (no `I` flag) and does not go through a tunnel.
+    public static func primaryDefault(netstat: String) -> (gateway: String, interface: String)? {
+        for line in netstat.split(separator: "\n") {
+            let f = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard f.count >= 4, f[0] == "default", !f[2].contains("I"),
+                  Net.isIPv4(f[1]), Net.isValidInterfaceName(f[3]), !Net.isTunnel(f[3]) else { continue }
+            return (f[1], f[3])
+        }
+        return nil
+    }
+
+    /// The card in `route -n get <ip>` output ("  interface: en0").
+    public static func interface(routeGet: String) -> String? {
+        for line in routeGet.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("interface:") else { continue }
+            let name = t.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
+            return Net.isValidInterfaceName(name) ? name : nil
+        }
+        return nil
+    }
+}

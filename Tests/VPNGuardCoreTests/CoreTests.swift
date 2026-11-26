@@ -514,8 +514,9 @@ final class WireGuardTests: XCTestCase {
 
     /// The generated rules must be valid pf syntax (macOS's own parser, no root needed).
     func testLockRulesParseWithPfctl() throws {
+        for refuse in [true, false] {
         let rules = PFRules.lockRules(vpnServers: ["203.0.113.10", "198.51.100.20"], routers: ["192.0.2.1"],
-                                      interfaces: ["bridge100", "vmenet0"], dnsLookupPort: VG.dnsLookupPort)
+                                      interfaces: ["bridge100", "vmenet0"], dnsLookupPort: VG.dnsLookupPort, refuse: refuse)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
         p.arguments = ["-n", "-f", "-"]
@@ -529,6 +530,7 @@ final class WireGuardTests: XCTestCase {
         p.waitUntilExit()
         let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         XCTAssertEqual(p.terminationStatus, 0, "pfctl rejected the rules:\n\(text)\n\(rules)")
+        }
     }
 
     /// Bug 4: a router address that stays unknown still starts the VPN, after a short grace.
@@ -569,5 +571,83 @@ final class WireGuardTests: XCTestCase {
         XCTAssertFalse(AutoVPN.networkMovedAway(connectedOn: [], links: [hotspot]))
         XCTAssertTrue(AutoVPN.isPPP(kind: "L2TP"))
         XCTAssertFalse(AutoVPN.isPPP(kind: "VPN"), "IKEv2 moves to a new network by itself")
+    }
+
+    // MARK: - Network loss and change (1.1.3)
+
+    /// #1: a pause belongs to the place where it started.
+    func testPauseEndsOnAnotherNetwork() {
+        let hotel = link("en0", "192.0.2.43", "192.0.2.1", "aa:bb:cc:00:00:01")
+        let on = PausedNetwork(links: [hotel])
+        XCTAssertTrue(on.covers([hotel]))
+        XCTAssertTrue(on.covers([]), "no network (Wi-Fi blip, sleep) keeps the pause")
+        XCTAssertTrue(on.covers([link("en0", "192.0.2.77", "192.0.2.1", "AA:BB:CC:00:00:01")]), "new address, same router")
+        XCTAssertFalse(on.covers([link("en0", "192.0.2.43", "192.0.2.1", "aa:bb:cc:00:00:99")]),
+                       "a cafe with the same router IP but another router")
+        XCTAssertFalse(on.covers([hotel, link("en7", "172.20.10.2", "172.20.10.1", "aa:bb:cc:00:00:02")]),
+                       "a second, new network (iPhone USB) ends it too")
+        XCTAssertTrue(on.covers([link("en0", "192.0.2.43", "192.0.2.1", nil)]), "router not checked yet, same IP")
+        XCTAssertFalse(on.covers([link("en0", "198.51.100.4", "198.51.100.1", nil)]), "router not checked yet, other IP")
+    }
+
+    func testOldConfigWithoutPausedOnStillLoads() throws {
+        let json = #"{"enabled":true,"vpnServers":[],"trusted":[],"pausedUntil":800000000}"#
+        let c = try JSONDecoder().decode(GuardConfig.self, from: Data(json.utf8))
+        XCTAssertNil(c.pausedOn)
+        XCTAssertNotNil(c.pausedUntil)
+    }
+
+    /// #4: a Wi-Fi blip or a short sleep is not a new place.
+    func testSameNetworkAfterBlip() {
+        let office = "en0=aa:bb:cc:00:00:01"
+        XCTAssertFalse(AutoVPN.isNewNetwork(key: "", lastKey: office, goneFor: nil))
+        XCTAssertFalse(AutoVPN.isNewNetwork(key: office, lastKey: office, goneFor: 4))
+        XCTAssertTrue(AutoVPN.isNewNetwork(key: office, lastKey: office, goneFor: 3600), "away for an hour")
+        XCTAssertTrue(AutoVPN.isNewNetwork(key: "en0=aa:bb:cc:00:00:02", lastKey: office, goneFor: 4))
+        XCTAssertTrue(AutoVPN.isNewNetwork(key: office, lastKey: "", goneFor: nil), "first network after launch")
+    }
+
+    /// #3: WireGuard's server route follows the network macOS really uses.
+    func testPrimaryDefaultRoute() {
+        let normal = """
+        Routing tables
+
+        Internet:
+        Destination        Gateway            Flags               Netif Expire
+        default            192.0.2.1          UGScg                 en7
+        default            198.51.100.1       UGScIg                en0
+        default            link#27            UCSIg           bridge100      !
+        """
+        XCTAssertEqual(Routes.primaryDefault(netstat: normal)?.interface, "en7", "not en0 just because it sorts first")
+        XCTAssertEqual(Routes.primaryDefault(netstat: normal)?.gateway, "192.0.2.1")
+        let wireGuardOn = """
+        Destination        Gateway            Flags               Netif Expire
+        default            10.8.0.2           UGSc                utun9
+        default            192.0.2.1          UGScIg                en7
+        """
+        XCTAssertNil(Routes.primaryDefault(netstat: wireGuardOn), "tunnel and scoped routes are not the answer")
+        XCTAssertNil(Routes.primaryDefault(netstat: ""))
+    }
+
+    /// #6: which card a VPN server is reached through.
+    func testRouteGetInterface() {
+        let out = """
+           route to: 203.0.113.10
+        destination: 203.0.113.10
+            gateway: 192.0.2.1
+          interface: en7
+              flags: <UP,GATEWAY,HOST,DONE,STATIC>
+        """
+        XCTAssertEqual(Routes.interface(routeGet: out), "en7")
+        XCTAssertNil(Routes.interface(routeGet: "  interface: en0; rm -rf /"))
+        XCTAssertNil(Routes.interface(routeGet: "route: writing to routing socket: not in table"))
+    }
+
+    /// #7: during "no network / checking the router" the lock drops silently.
+    func testLockRulesDropVariant() {
+        let drop = PFRules.lockRules(vpnServers: [], routers: [], interfaces: [], refuse: false)
+        XCTAssertTrue(drop.contains("block drop out quick all"))
+        XCTAssertFalse(drop.contains("block return"))
+        XCTAssertTrue(PFRules.lockRules(vpnServers: [], routers: [], interfaces: []).contains("block return out quick all"))
     }
 }

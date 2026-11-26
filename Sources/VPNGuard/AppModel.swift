@@ -142,6 +142,8 @@ final class AppModel: ObservableObject {
     private var resolvingSince: Date?
     /// The networks (card, address, router) the macOS VPN connected on.
     private var vpnConnectedOn: Set<String>?
+    /// When the last network went away (a Wi-Fi blip or sleep keeps your VPN choice, see AutoVPN).
+    private var networkGoneSince: Date?
 
     private var pendingTimer: Timer?
     private var pendingStarted = Date.distantPast
@@ -733,12 +735,20 @@ final class AppModel: ObservableObject {
     private func runAutoVPN() {
         guard !isPreview, helperReady, let s = status, selectedVPNID != nil else { return }
         let key = s.links.map { "\($0.interface)=\($0.routerMAC ?? $0.routerIP)" }.joined(separator: ",")
-        if key != networkKey {
-            networkKey = key
-            userStoppedVPN = false
-            autoDisconnectDoneFor = nil
+        if key.isEmpty {
+            if networkGoneSince == nil { networkGoneSince = Date() }
+        } else if key != networkKey || networkGoneSince != nil {
+            // Your Connect / Disconnect choice belongs to a place: forget it only at a new one, not
+            // after a Wi-Fi blip or a short sleep (bug: a blip at the office disconnected your VPN).
+            let goneFor = networkGoneSince.map { Date().timeIntervalSince($0) }
+            if AutoVPN.isNewNetwork(key: key, lastKey: networkKey, goneFor: goneFor) {
+                userStoppedVPN = false
+                autoDisconnectDoneFor = nil
+            }
             autoStartAttempts = 0
             lastAutoStart = .distantPast
+            networkKey = key
+            networkGoneSince = nil
         }
         if s.reason == .resolving {
             if resolvingSince == nil {
@@ -751,7 +761,10 @@ final class AppModel: ObservableObject {
             resolvingSince = nil
         }
         if vpnState == .connected {
-            if vpnConnectedOn == nil { vpnConnectedOn = Set(s.links.map(AutoVPN.linkKey)) }
+            if vpnConnectedOn == nil {
+                vpnConnectedOn = Set(s.links.map(AutoVPN.linkKey))
+                narrowVPNNetwork(status: s)
+            }
         } else {
             vpnConnectedOn = nil
         }
@@ -777,6 +790,32 @@ final class AppModel: ObservableObject {
             guard autoDisconnect, autoDisconnectDoneFor != key else { return }
             autoDisconnectDoneFor = key
             if vpnState.isUp { stopSelectedVPN() }
+        }
+    }
+
+    /// With two networks up, find the one the macOS VPN really uses (the route to its server), so a
+    /// restart happens when exactly that one goes away.
+    private func narrowVPNNetwork(status s: GuardStatus) {
+        guard let v = selectedVPN, v.engine == .macOS, AutoVPN.isPPP(kind: v.kind), s.links.count > 1,
+              let server = v.remoteAddress.map(GuardConfig.normalizeServer) else { return }
+        guard let ip = Net.isIPv4(server) ? server : s.config.hostIPs[server]?.first, Net.isIPv4(ip) else { return }
+        let fallback = vpnConnectedOn
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/sbin/route")
+            p.arguments = ["-n", "get", "-inet", ip]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return }
+            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            p.waitUntilExit()
+            guard let iface = Routes.interface(routeGet: text) else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.vpnState == .connected, self.vpnConnectedOn == fallback else { return }
+                let used = s.links.filter { $0.interface == iface }
+                if !used.isEmpty { self.vpnConnectedOn = Set(used.map(AutoVPN.linkKey)) }
+            }
         }
     }
 

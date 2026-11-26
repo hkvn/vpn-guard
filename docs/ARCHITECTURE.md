@@ -68,7 +68,7 @@ doubt it locks:
 | Situation | Mode | Reason |
 |---|---|---|
 | Protection off | open | `disabled` |
-| Paused and the pause has not ended | open | `paused` |
+| Paused, the pause has not ended, and no new router has appeared since it started | open | `paused` |
 | No network with a router | **locked** | `noNetwork` |
 | A known router that is not trusted | **locked** | `untrusted` |
 | A router whose hardware address is not known yet | **locked** | `resolving` |
@@ -109,6 +109,8 @@ block drop in quick all
 
 - Tunnels and local VM bridges are passed because whatever they send to the internet leaves through
   a real interface later, where it is filtered. Any new tunnel interface triggers a rule rebuild.
+- While there is no network or a router is still being checked (`noNetwork`, `resolving`), the last
+  line is `block drop` instead, so a Wi‑Fi blip at a trusted place does not reset open connections.
 - Everything else, **IPv6 included**, is refused. `block return` makes apps fail fast instead of
   hanging.
 - Every input is validated again before it reaches pfctl (IPv4 only, interface names letters and
@@ -133,7 +135,7 @@ straight into the rules. For host names:
    locked, otherwise every 10 min. A request that arrives during a lookup runs right after it.
 2. **While locked**, the helper adds `pass out quick inet proto udp from any port 53530 to any port
    53 keep state` to the rules only for the duration of its own lookup (normally under a second),
-   then removes it. pf on macOS does not apply `user root` to these packets (measured), so time is
+   then removes it. Lookups also run whenever the set of networks changes; none while there is none. pf on macOS does not apply `user root` to these packets (measured), so time is
    the guard. If pfctl ever rejects the line, the helper locks without it and logs that. Failed
    lookups are logged ("Could not look up VPN server …").
 3. Looked-up IPs are a cache (`GuardConfig.hostIPs`): a server leaving the list keeps its IP (capped
@@ -150,8 +152,9 @@ The helper runs one tunnel at a time with the bundled `wireguard-go` (userspace,
 needed), following the same steps as `wg-quick` on macOS:
 
 1. Start `wireguard-go -f utun` with `WG_TUN_NAME_FILE`, wait for its control socket.
-2. Add a host route to the server through the current router (so even the first handshake leaves
-   through the real network), and keep it updated when the network changes.
+2. Add a host route to the server through the router of the network macOS really uses (the
+   untunnelled default route from `netstat`, else the service order; `vpnguard detect` shows it). Even the first handshake then leaves through the real network, and
+   the route is updated when the network changes.
 3. Configure the engine over its control socket (`set=1`, keys in hex, endpoint IP, allowed IPs,
    keepalive).
 4. Add the addresses (`ifconfig … alias`), MTU, and routes: `0.0.0.0/1` and `128.0.0.0/1` (and `::/1`,
@@ -196,6 +199,9 @@ once; the profile file is readable only by the user and deleted after 10 minutes
   - an L2TP/PPTP VPN whose network (card + address + router) is gone while another network is up:
     restart it at once (macOS waits up to 80 s); with no network at all it waits;
   - a macOS VPN that failed to connect: ask the helper to look the server names up again;
+  - your Connect / Disconnect choice is kept when the same network comes back within 10 minutes
+    (Wi‑Fi blip, short sleep), and forgotten at a new network (`AutoVPN.isNewNetwork`);
+  - with two networks up, the card an L2TP VPN uses is taken from the route to its server;
   - arrival at a trusted network: stop it once;
   - switching VPN stops the old one by asking macOS directly (`stopService`), not the watcher.
 - **Trusting** makes one entry per router (`TrustedNetwork.newEntries`), even over Wi-Fi + cable.

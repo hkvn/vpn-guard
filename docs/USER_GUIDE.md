@@ -152,8 +152,9 @@ found again even while you are blocked. You can see the list in Settings → VPN
 
 - **Connect by itself on untrusted networks.** VPN Guard starts your VPN when the network is not
   trusted, and tries again with growing pauses if it fails. If you disconnect it yourself, it waits
-  until you change network. When you move to another network, an L2TP VPN is restarted at once
-  (macOS alone would keep a dead connection for up to 80 seconds).
+  until you change network; a short Wi‑Fi drop or sleep on the same network keeps your choice. When
+  you move to another network, an L2TP VPN is restarted at once (macOS alone would keep a dead
+  connection for up to 80 seconds).
 - **Disconnect when I join a trusted network.** Once, on arrival. You can connect again by hand.
 
 Only one VPN runs at a time: choosing another VPN disconnects the old one.
@@ -207,7 +208,9 @@ Many hotel and café Wi‑Fi networks show a login page before they let you onli
 through your VPN. Use **Pause** (5 minutes, 15 minutes or 1 hour), sign in, then press **Resume
 Protection** or simply wait: protection comes back by itself when the time is up. **+5 min** adds time.
 
-While paused, traffic is **not** protected.
+While paused, traffic is **not** protected. A pause belongs to the network where you started it: if you
+join another network (you leave the hotel, or plug in your iPhone), the pause ends at once. A short
+Wi‑Fi drop on the same network keeps it.
 
 ## 7. Settings
 

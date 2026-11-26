@@ -29,6 +29,8 @@ public struct GuardConfig: Codable, Equatable, Sendable {
     public var hostIPs: [String: [String]]
     public var trusted: [TrustedNetwork]
     public var pausedUntil: Date?
+    /// The routers seen when the pause started. Joining any other router ends the pause.
+    public var pausedOn: PausedNetwork?
     /// Built-in WireGuard VPNs (no secrets here).
     public var wireguard: [WireGuardTunnel]
     /// The WireGuard VPN the helper should keep up, if any.
@@ -54,6 +56,7 @@ public struct GuardConfig: Codable, Equatable, Sendable {
         hostIPs = try c.decodeIfPresent([String: [String]].self, forKey: .hostIPs) ?? [:]
         trusted = try c.decodeIfPresent([TrustedNetwork].self, forKey: .trusted) ?? []
         pausedUntil = try c.decodeIfPresent(Date.self, forKey: .pausedUntil)
+        pausedOn = try c.decodeIfPresent(PausedNetwork.self, forKey: .pausedOn)
         wireguard = try c.decodeIfPresent([WireGuardTunnel].self, forKey: .wireguard) ?? []
         wgActive = try c.decodeIfPresent(UUID.self, forKey: .wgActive)
     }
@@ -97,9 +100,12 @@ public struct NetworkLink: Codable, Hashable, Sendable {
     public var routerIP: String
     public var routerMAC: String?
     public var trustedName: String?
+    /// configd service ID (to find the network macOS prefers, from the service order).
+    public var serviceID: String?
 
     public init(interface: String, displayName: String? = nil, address: String? = nil,
-                routerIP: String, routerMAC: String? = nil, trustedName: String? = nil) {
+                routerIP: String, routerMAC: String? = nil, trustedName: String? = nil, serviceID: String? = nil) {
+        self.serviceID = serviceID
         self.interface = interface
         self.displayName = displayName
         self.address = address

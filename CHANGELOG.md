@@ -2,6 +2,26 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.1.3 — 2026-11-26
+
+Fixes from a second review, of network loss and network change.
+
+### Fixed
+- **A pause followed you to the next network**: pause at a hotel, walk to a café within the time, and
+  you were unprotected there. A pause now ends as soon as you join another network.
+- WireGuard sent its connection through the first network card by name (Wi‑Fi) even when macOS used
+  another one (cable): now it uses the network macOS really uses.
+- A short Wi‑Fi drop or sleep counted as a new network: a VPN you connected by hand at the office was
+  disconnected again, and one you disconnected at a café came back. Your choice is now kept on the
+  same network.
+- Server names are looked up when you join a new network, also when the Mac was already locked.
+- With two networks up, an L2TP VPN is restarted when exactly the one it uses goes away.
+- While there is no network or the router is still being checked, blocked traffic is dropped quietly,
+  so open connections (SSH, calls) survive a short Wi‑Fi drop on a trusted network.
+
+### Added
+- `vpnguard detect` shows which network the internet goes out through.
+
 ## 1.1.2 — 2026-11-26
 
 Fixes from a logic review after a real "the VPN does not reconnect" report.

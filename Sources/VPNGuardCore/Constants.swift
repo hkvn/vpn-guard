@@ -3,7 +3,7 @@ import Foundation
 /// Names and paths shared by the app, the helper and the install scripts.
 /// Keep these in sync with Resources/helper/*.sh and the launchd plist.
 public enum VG {
-    public static let version = "1.1.2"
+    public static let version = "1.1.3"
 
     public static let appBundleID = "local.vpnguard.app"
     public static let helperLabel = "local.vpnguard.helper"

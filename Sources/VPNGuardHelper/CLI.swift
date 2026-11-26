@@ -242,6 +242,9 @@ enum CLI {
         for l in links {
             print("arp fallback for \(l.routerIP): \(ARPTable.lookup(ip: l.routerIP, interface: l.interface) ?? "no entry")")
         }
+        if links.count > 1, let used = NetworkProbe.primaryLink(links, store: SCDynamicStoreCreate(nil, "vpnguard-cli" as CFString, nil, nil)) {
+            print("Internet goes out through: \(used.label) (\(used.interface)), router \(used.routerIP)")
+        }
         return 0
     }
 

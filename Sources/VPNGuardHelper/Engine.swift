@@ -30,8 +30,10 @@ final class Engine {
     /// True only while the helper's own server lookup runs: then lock mode lets DNS out from
     /// `VG.dnsLookupPort` (and nothing else). Closed again when the lookup is done.
     private var dnsWindowOpen = false
-    /// Links of the latest evaluation (the published status can be one step behind).
+    /// Links and reason of the latest evaluation (the published status can be one step behind).
     private var currentLinks: [NetworkLink] = []
+    private var currentReason: GuardReason = .disabled
+    private var lastNetworksKey = ""
     private(set) var status: GuardStatus
     private var hasPublished = false
 
@@ -141,6 +143,7 @@ final class Engine {
         let now = Date()
         if let until = config.pausedUntil, until <= now {
             config.pausedUntil = nil
+            config.pausedOn = nil
             persist()
         }
 
@@ -152,12 +155,34 @@ final class Engine {
             links[i].trustedName = config.trustedNetwork(matchingMAC: links[i].routerMAC)?.name
         }
 
+        // A pause belongs to the place where it started (a hotel login page). It must not follow you
+        // to the next network (bug: you stayed unprotected at the next cafe until the timer ran out).
+        if config.isPaused(at: now), !links.isEmpty {
+            if let on = config.pausedOn {
+                if !on.covers(links) {
+                    config.pausedUntil = nil
+                    config.pausedOn = nil
+                    persist()
+                    Log.info("Pause ended: you joined another network")
+                }
+            } else {
+                config.pausedOn = PausedNetwork(links: links) // paused while there was no network
+                persist()
+            }
+        }
+
         currentLinks = links
+        let networksKey = links.map { "\($0.interface)|\($0.routerIP)|\($0.routerMAC ?? "")" }.sorted().joined(separator: ",")
+        let networksChanged = networksKey != lastNetworksKey
+        lastNetworksKey = networksKey
         let decision = Policy.decide(config: config, links: links, now: now)
+        currentReason = decision.reason
         let modeBefore = appliedMode
         apply(decision.mode, links: links)
-        // Locked or unlocked just now: check the VPN server names at once (bug: up to 45 s wait).
-        if modeBefore != nil, appliedMode != modeBefore { refreshHosts(force: true) }
+        // Locked or unlocked, or a new network: check the VPN server names at once.
+        if (modeBefore != nil && appliedMode != modeBefore) || (networksChanged && !links.isEmpty) {
+            refreshHosts(force: true)
+        }
         // After apply(): the firewall already lets the WireGuard server through.
         ensureWireGuard(links: links)
         // After apply(): in lock mode the ping to the router is only allowed once the rules include it.
@@ -180,11 +205,15 @@ final class Engine {
             firewallError = nil
 
         case .locked:
+            // No network yet, or the router is still being checked: drop silently, so a Wi-Fi blip
+            // at a trusted place does not kill open connections (SSH, calls). Otherwise refuse at once.
+            let refuse = currentReason != .noNetwork && currentReason != .resolving
             func rules(withDNS: Bool) -> String {
                 PFRules.lockRules(vpnServers: config.allowedIPs,
                                   routers: links.map(\.routerIP),
                                   interfaces: Interfaces.names(),
-                                  dnsLookupPort: withDNS ? VG.dnsLookupPort : nil)
+                                  dnsLookupPort: withDNS ? VG.dnsLookupPort : nil,
+                                  refuse: refuse)
             }
             var wanted = rules(withDNS: dnsWindowOpen && !dnsRuleRejected)
             guard appliedMode != .locked || wanted != appliedRules else { return }
@@ -304,7 +333,7 @@ final class Engine {
             wgError = nil
             return
         }
-        let gateway = links.first?.routerIP
+        let gateway = NetworkProbe.primaryLink(links, store: dynamicStore)?.routerIP
         let endpointIP = Net.isIPv4(tunnel.endpointHost) ? tunnel.endpointHost : config.hostIPs[tunnel.endpointHost]?.first
         if wg.isRunning, wg.tunnelID == id, endpointIP == nil || endpointIP == wg.endpointIP {
             wg.updateEndpointRoute(gateway: gateway)
@@ -366,7 +395,8 @@ final class Engine {
     /// locked (works thanks to the DNS lookup rule), otherwise every 10 min; `force` for right now.
     private func refreshHosts(force: Bool = false) {
         let hosts = config.serverHosts.filter(Net.isHostName)
-        guard !hosts.isEmpty else { return }
+        // No network: nothing to ask. A network showing up triggers a lookup (see evaluate).
+        guard !hosts.isEmpty, !currentLinks.isEmpty else { return }
         guard !hostRefreshRunning else {
             // Asked while one runs (e.g. a new server added): run again right after, don't drop it.
             if force { hostRefreshPending = true }
@@ -495,19 +525,22 @@ final class Engine {
         case .pause(let minutes):
             guard config.enabled else { throw CommandError(message: "Protection is off, so there is nothing to pause.") }
             guard (1...1440).contains(minutes) else { throw CommandError(message: "Pause must be 1 to 1440 minutes.") }
+            evaluate("pause request")
             config.pausedUntil = Date().addingTimeInterval(TimeInterval(minutes * 60))
+            config.pausedOn = currentLinks.isEmpty ? nil : PausedNetwork(links: currentLinks)
             Log.info("Paused for \(minutes) min")
             persist()
             evaluate("paused")
 
         case .resume:
             config.pausedUntil = nil
+            config.pausedOn = nil
             persist()
             evaluate("resumed")
 
         case .setEnabled(let on):
             config.enabled = on
-            if !on { config.pausedUntil = nil }
+            if !on { config.pausedUntil = nil; config.pausedOn = nil }
             Log.info("Protection \(on ? "ON" : "OFF")")
             persist()
             evaluate(on ? "enabled" : "disabled")
