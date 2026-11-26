@@ -20,6 +20,12 @@ public enum AutoVPN {
         }
     }
 
+    /// Protection off or paused means "normal internet": a VPN that VPN Guard started by itself is
+    /// stopped then. One the user connected by hand stays on.
+    public static func shouldStopOwnVPN(reason: GuardReason) -> Bool {
+        reason == .disabled || reason == .paused
+    }
+
     /// One physical network as a VPN sees it: card, our address, router.
     public static func linkKey(_ link: NetworkLink) -> String {
         "\(link.interface)|\(link.address ?? "")|\(link.routerIP)"

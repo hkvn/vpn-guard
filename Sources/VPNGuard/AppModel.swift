@@ -40,6 +40,8 @@ struct NetworkCardInfo: Identifiable, Equatable {
     let detail: String
     let trusted: Bool?
     var pill: String = ""
+    /// The network macOS sends traffic through, when there are several (shown first, highlighted).
+    var inUse = false
 }
 
 enum SettingsPane: String, CaseIterable, Identifiable {
@@ -123,6 +125,7 @@ final class AppModel: ObservableObject {
         /// The server address this app added for the selected VPN (so it can swap it later).
         static let autoServer = "autoServer"   // before 1.1.2: one server
         static let autoServers = "autoServers"
+        static let vpnStartedByUs = "vpnStartedByVPNGuard"
         static let onboardingDone = "onboardingDone"
         static let pauseLength = "pauseLength"
     }
@@ -375,17 +378,19 @@ final class AppModel: ObservableObject {
             return [NetworkCardInfo(id: "none", symbol: "wifi.slash", title: "No network", detail: "Not connected", trusted: nil)]
         }
         let several = s.links.count > 1
-        return s.links.map { link in
+        let cards = s.links.map { link in
             let hotspot = TrustPick.isPhoneHotspot(link)
             let kind = Self.kindName(link)
-            let inUse = several && link.interface == s.primaryInterface ? " · in use" : ""
+            let inUse = several && link.interface == s.primaryInterface
             if let name = link.trustedName {
                 return NetworkCardInfo(id: link.interface, symbol: Self.symbol(forTrustedName: name), title: name,
-                                       detail: "\(kind) · \(link.routerIP)\(inUse)", trusted: true, pill: pillText(for: link))
+                                       detail: "\(kind) · \(link.routerIP)", trusted: true, pill: pillText(for: link), inUse: inUse)
             }
             return NetworkCardInfo(id: link.interface, symbol: Self.symbol(for: link, hotspot: hotspot), title: kind,
-                                   detail: "Router \(link.routerIP)\(inUse)", trusted: false, pill: pillText(for: link))
+                                   detail: "Router \(link.routerIP)", trusted: false, pill: pillText(for: link), inUse: inUse)
         }
+        // The network in use first (the user's request); the rest keep their order.
+        return cards.filter(\.inUse) + cards.filter { !$0.inUse }
     }
 
     static func symbol(for link: NetworkLink, hotspot: Bool) -> String {
@@ -655,9 +660,17 @@ final class AppModel: ObservableObject {
         syncVPNServers()
     }
 
+    /// True while the running VPN is one VPN Guard started by itself (kept across app restarts, because
+    /// the VPN keeps running when the app quits). Only such a VPN is stopped when protection goes off.
+    private var vpnStartedByUs: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.vpnStartedByUs) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.vpnStartedByUs) }
+    }
+
     func connectVPN() {
         guard !isPreview else { return }
         userStoppedVPN = false
+        vpnStartedByUs = false
         if selectedVPN?.engine == .wireGuard {
             startSelectedVPN()
             return
@@ -670,6 +683,7 @@ final class AppModel: ObservableObject {
     func disconnectVPN() {
         guard !isPreview else { return }
         userStoppedVPN = true
+        vpnStartedByUs = false
         stopSelectedVPN()
     }
 
@@ -850,11 +864,19 @@ final class AppModel: ObservableObject {
             guard Date().timeIntervalSince(lastAutoStart) >= delays[min(autoStartAttempts, delays.count - 1)] else { return }
             lastAutoStart = Date()
             autoStartAttempts += 1
+            vpnStartedByUs = true
             startSelectedVPN()
+        } else if AutoVPN.shouldStopOwnVPN(reason: s.reason) {
+            // Protection off or paused: normal internet. Stop the VPN we started (bug: it stayed on).
+            if vpnStartedByUs, vpnState.isUp { stopSelectedVPN() }
+            vpnStartedByUs = false
         } else if s.mode == .open, s.reason == .trusted {
             guard autoDisconnect, autoDisconnectDoneFor != key else { return }
             autoDisconnectDoneFor = key
-            if vpnState.isUp { stopSelectedVPN() }
+            if vpnState.isUp {
+                stopSelectedVPN()
+                vpnStartedByUs = false
+            }
         }
     }
 

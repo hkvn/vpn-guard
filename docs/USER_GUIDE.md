@@ -167,6 +167,8 @@ found again even while you are blocked. You can see the list in Settings → VPN
   you move to another network, an L2TP VPN is restarted at once (macOS alone would keep a dead
   connection for up to 80 seconds).
 - **Disconnect when I join a trusted network.** Once, on arrival. You can connect again by hand.
+- **Protection off or paused** means normal internet: VPN Guard disconnects the VPN it started by
+  itself, and starts it again when protection comes back. A VPN you connected by hand stays on.
 
 Only one VPN runs at a time: choosing another VPN disconnects the old one.
 

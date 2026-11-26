@@ -2,6 +2,21 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.2.2 — unreleased
+
+From testing on a real Mac with office Wi‑Fi, a LAN cable and an iPhone over USB.
+
+### Changed
+- The network your Mac uses is shown **first and highlighted** (a frame in the state's color and
+  "● In use"). Long card names are shorter ("USB 10/100/1000 LAN" is now "USB LAN").
+
+### Fixed
+- **Protection off or Pause now disconnects the VPN that VPN Guard started by itself** (it stayed on).
+  It starts again when protection comes back. A VPN you connected by hand stays on.
+- Letting go of the status shield before the ring is full no longer keeps the ring filling.
+- The popover window could stay taller than its content after a change (an empty band at the top and
+  the bottom, broken corners), seen in the "Protection is off" state.
+
 ## 1.2.1 — 2026-11-26
 
 Found in a real test with an iPhone over USB.

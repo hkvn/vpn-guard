@@ -71,7 +71,10 @@ struct ProtectionOrb: View {
             holding = pressing
             if pressing {
                 withAnimation(.linear(duration: Self.holdDuration)) { progress = 1 }
-            } else if progress < 1 {
+            } else {
+                // Let go: always empty the ring. `progress` is already 1 the moment the press starts (only
+                // the drawing is slow), so the old `progress < 1` check never reset it and the ring kept
+                // filling after an early release. The switch itself only happens in `fire()`.
                 withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
             }
         }

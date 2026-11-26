@@ -114,7 +114,13 @@ public struct NetworkLink: Codable, Hashable, Sendable {
         self.trustedName = trustedName
     }
 
-    public var label: String { displayName ?? interface }
+    public var label: String {
+        guard let name = displayName else { return interface }
+        let short = name.replacingOccurrences(of: #"\s*\b10/100(/1000)?(/2500)?(/5000)?(/10G)?\b"#, with: "",
+                                              options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        return short.isEmpty ? name : short
+    }
 }
 
 public enum GuardMode: String, Codable, Sendable {

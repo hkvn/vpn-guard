@@ -8,6 +8,19 @@ enum MenuBarPanel {
             window.orderOut(nil)
         }
     }
+
+    /// Keeps the menu bar window exactly as big as its content, top edge fixed under the menu bar.
+    /// SwiftUI sometimes leaves it taller after the content changes height (seen with the "off" state).
+    static func fit(contentSize size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        for window in NSApp.windows where window.className.contains("MenuBarExtra") && window.isVisible {
+            let content = window.contentRect(forFrameRect: window.frame)
+            guard abs(content.height - size.height) > 0.5 || abs(content.width - size.width) > 0.5 else { continue }
+            var frame = window.frameRect(forContentRect: NSRect(origin: content.origin, size: size))
+            frame.origin.y = window.frame.maxY - frame.height
+            window.setFrame(frame, display: true, animate: false)
+        }
+    }
 }
 
 /// Small AppKit alerts. Close the menu bar panel and bring the app forward first.

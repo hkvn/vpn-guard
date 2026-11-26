@@ -759,4 +759,20 @@ final class WireGuardTests: XCTestCase {
         p.waitUntilExit()
         XCTAssertEqual(p.terminationStatus, 0, String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
     }
+
+    func testShortCardNames() {
+        XCTAssertEqual(NetworkLink(interface: "en7", displayName: "USB 10/100/1000 LAN", routerIP: "192.0.2.1").label, "USB LAN")
+        XCTAssertEqual(NetworkLink(interface: "en8", displayName: "USB 10/100 LAN", routerIP: "192.0.2.1").label, "USB LAN")
+        XCTAssertEqual(NetworkLink(interface: "en0", displayName: "Wi-Fi", routerIP: "192.0.2.1").label, "Wi-Fi")
+        XCTAssertEqual(NetworkLink(interface: "en9", displayName: "iPhone USB", routerIP: "172.20.10.1").label, "iPhone USB")
+        XCTAssertEqual(NetworkLink(interface: "en5", routerIP: "192.0.2.1").label, "en5")
+    }
+
+    func testOwnVPNStopsWhenProtectionIsOffOrPaused() {
+        XCTAssertTrue(AutoVPN.shouldStopOwnVPN(reason: .disabled))
+        XCTAssertTrue(AutoVPN.shouldStopOwnVPN(reason: .paused))
+        for r in [GuardReason.untrusted, .mixed, .resolving, .noNetwork, .trusted] {
+            XCTAssertFalse(AutoVPN.shouldStopOwnVPN(reason: r), "\(r)")
+        }
+    }
 }

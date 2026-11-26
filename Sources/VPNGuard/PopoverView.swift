@@ -17,7 +17,7 @@ struct PopoverView: View {
                 VStack(spacing: 8) {
                     ForEach(model.networkCards) { card in
                         InfoCard(symbol: card.symbol, tone: card.trusted == true ? .blue : nil,
-                                 title: card.title, detail: card.detail) {
+                                 title: card.title, detail: card.detail, highlight: card.inUse ? look.tone : nil) {
                             if let trusted = card.trusted {
                                 Pill(text: card.pill, tone: trusted ? .blue : .orange)
                             }
@@ -51,7 +51,9 @@ struct PopoverView: View {
             footer
         }
         .frame(width: 340)
-        .animation(.smooth(duration: 0.35), value: look)
+        // No animation on the whole popover: an animated height change left the menu bar window taller
+        // than its content (empty bands above and below, broken corners). Only the glow and the orb animate.
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { MenuBarPanel.fit(contentSize: $0) }
         .onAppear { model.refresh() }
     }
 
@@ -86,7 +88,6 @@ struct PopoverView: View {
                     .padding(.vertical, 4)
                     .background(Capsule().fill(Color.primary.opacity(0.05)))
                     .padding(.top, 12)
-                    .transition(.opacity)
             }
         }
         .padding(.top, 8)
@@ -96,6 +97,7 @@ struct PopoverView: View {
         .background(alignment: .top) {
             BreathingGlow(tone: look.tone, glyph: look.glyph, width: 340, height: 260)
                 .offset(y: -90)
+                .animation(.smooth(duration: 0.35), value: look.tone)
         }
         .clipped()
         .accessibilityElement(children: .contain)

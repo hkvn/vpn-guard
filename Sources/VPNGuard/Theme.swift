@@ -226,15 +226,25 @@ struct InfoCard<Trailing: View>: View {
     var tone: Tone?
     let title: String
     let detail: String
+    /// The network in use: a frame and tint in this color, and "● In use" before the detail.
+    var highlight: Tone? = nil
     @ViewBuilder var trailing: () -> Trailing
 
     var body: some View {
         HStack(spacing: 12) {
             IconTile(symbol: symbol, tone: tone)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    if let highlight {
+                        Text("● In use")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(highlight.text)
+                            .fixedSize()
+                    }
+                }
                 Text(detail)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -246,8 +256,10 @@ struct InfoCard<Trailing: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Palette.card))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Palette.cardBorder))
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .fill(highlight.map { $0.fill.opacity(0.12) } ?? Palette.card))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .strokeBorder(highlight.map { $0.fill.opacity(0.6) } ?? Palette.cardBorder, lineWidth: highlight == nil ? 1 : 1.5))
         .accessibilityElement(children: .combine)
     }
 }
