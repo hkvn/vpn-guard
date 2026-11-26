@@ -29,6 +29,17 @@ Guard sees and why it is open or locked.
 
 ## The VPN does not connect while blocked
 
+The popover and Settings → VPN say why (see the table in the
+[user guide](USER_GUIDE.md#when-the-vpn-does-not-connect)). The two most common:
+
+- **Login refused**, but the password is right: the account may be busy. Some routers allow one
+  connection per account (DrayTek: *Multiple Concurrent Connections Allowed* is off). If the same account
+  also has a WireGuard or L2TP session on another device, or one that ended less than a few minutes
+  ago, the router refuses the second login with error 691. Use a separate account per VPN type.
+- **Server did not answer**: try another network (your iPhone hotspot). Some networks block VPNs.
+
+Other things to check:
+
 - Check **Settings → VPN → Allowed servers…**. The VPN's server must be there with an IP. A host name
   that shows *IP not known yet* could not be looked up: check the log for "Could not look up VPN
   server". If the network's DNS does not answer, pause for a minute, then resume.
@@ -75,6 +86,17 @@ network again.
 
 That is expected while locked: only the VPN may use the network. They work on trusted networks, while
 paused, or (for Tailscale) when its traffic goes through your VPN.
+
+## Checking for leaks by hand
+
+Settings → General → **Test Now…** does this for you. In a terminal, the same probes for one card:
+
+```bash
+"/Applications/VPN Guard.app/Contents/MacOS/VPNGuard" --probe en0
+```
+
+On an untrusted network every "direct" line must say `blocked`. On a trusted network they say `GOT
+OUT`, because the internet is open there on purpose.
 
 ## Collecting information for a bug report
 

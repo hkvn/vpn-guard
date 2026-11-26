@@ -68,12 +68,21 @@ doubt it locks:
 | Situation | Mode | Reason |
 |---|---|---|
 | Protection off | open | `disabled` |
+| Going to sleep, or just woken and the routers not read again yet (`WakeGuard`) | **locked** | `resolving` |
 | Paused, the pause has not ended, and no new router has appeared since it started | open | `paused` |
 | No network with a router | **locked** | `noNetwork` |
 | No trusted network, and a known router that is not trusted | **locked** | `untrusted` |
 | No trusted network, and router hardware addresses not known yet | **locked** | `resolving` |
 | Some networks trusted, others not (e.g. office Wi‑Fi + iPhone USB) | **locked**, trusted cards open | `mixed` |
 | Every active network is trusted | open | `trusted` |
+
+**Sleep and wake.** The helper watches IOKit power messages. Before the Mac sleeps it locks (the
+Mac waits for that answer), because it may wake up somewhere else: lid closed at home, opened at a
+café. On wake it empties the ARP table and pings the routers every second; a router counts only once
+it answered again since the wake, so the old place's hardware address that macOS may still show does
+not open anything. Then the normal decision runs (at home: open again within about a second after
+Wi‑Fi is back). After 60 s the check ends anyway (some USB modems never show a hardware address). A
+pause continues after the wake only if the router is the same.
 
 ## Network detection
 
@@ -220,6 +229,26 @@ SwiftUI `MenuBarExtra` (window style) plus two windows (Settings, Welcome). The 
 template image drawn in code (`GuardGlyph`) from the same 24-unit shield geometry as the app icon and
 the popover. The status orb (`ProtectionOrb`) animates with a `TimelineView` at 30 fps only while
 visible, respects Reduce Motion, and toggles protection on a 0.7 s press and hold.
+
+### When the VPN fails
+
+`AppModel` keeps two ids: the **chosen** VPN (`selectedVPNID`, the ✓, saved) and the VPN **in use**
+(`activeVPNID`: the chosen one, or `backupVPNID` while a backup stands in for it on this network).
+
+- A macOS VPN attempt that ends "disconnected" without having been "connected" is a failed try, unless
+  VPN Guard or the user stopped it. For L2TP / PPTP the reason comes from the end of `/var/log/ppp.log`
+  (`PPPLog.lastFailure`, only lines of this attempt and this server), else from pppd's exit code
+  (`LastCause` in the extended status), else "could not connect". WireGuard has no failed event:
+  25 s without a handshake counts as failed.
+- `BackupVPN.next` picks the next VPN after 3 failed tries: list order, full-tunnel only, never one
+  that already failed on this network. When all failed, the chosen VPN is tried again with back-off.
+  A new network, *Try Again*, or choosing another VPN starts over with the chosen one.
+- `Notices.decide` says when a notification is due (blocked for 20 s or 3 failed tries, backup in use,
+  protected again); `Notifier` sends it with UserNotifications.
+- The protection test (`ProtectionProbe` + `LeakTest`) opens sockets bound to one network card
+  (`IP_BOUND_IF`, like `ping -b`), so the VPN's routes do not apply, and tries TCP 443 and UDP 53 to
+  1.1.1.1 (and IPv6 if the card has it). pf must stop all of them. `VPNGuard --probe en0` prints the
+  raw results.
 
 ## Release builds
 

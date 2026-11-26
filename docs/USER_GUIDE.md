@@ -116,6 +116,15 @@ use the **+ / −** buttons.
 Settings → **VPN** lists every VPN VPN Guard can use. The one with **✓** is used on untrusted
 networks. Click a row to choose it; ⓘ shows details.
 
+**Rename a VPN** the same way as a trusted network: right-click its row → **Rename…**, or press
+**Rename…** in its ⓘ sheet. A WireGuard name belongs to VPN Guard. An L2TP, PPTP or Cisco IPSec VPN is
+renamed in macOS too, so System Settings shows the same name; its password and your ✓ choice stay. An
+IKEv2 VPN or another app's VPN is renamed in System Settings (or that app).
+
+A WireGuard VPN that carries only some addresses (its *AllowedIPs* is not `0.0.0.0/0`) is labeled
+**Office network only** (or *Some addresses only*): while it is your VPN on an untrusted network, other
+websites stay blocked. VPN Guard asks before you choose such a VPN.
+
 ### Add a VPN
 
 Press **+** (or *New…* in the welcome window) and choose a type.
@@ -177,11 +186,41 @@ found again even while you are blocked. You can see the list in Settings → VPN
   until you change network; a short Wi‑Fi drop or sleep on the same network keeps your choice. When
   you move to another network, an L2TP VPN is restarted at once (macOS alone would keep a dead
   connection for up to 80 seconds).
+- **Use my other VPNs as a backup** (off by default). If the VPN with ✓ fails 3 times in a row, VPN
+  Guard tries the next VPN in your list that carries all traffic. It never uses a VPN marked *Needs a
+  fix* or *Office network only*, or another app's VPN. The popover then says **Protected** and names
+  the backup; the list shows *Connected · backup*. Your ✓ does not move: on the next network, or when
+  you press **Try Again**, VPN Guard starts with your ✓ VPN again. It is off by default because a
+  backup sends your traffic out through another place than the VPN you chose.
 - **Disconnect when I join a trusted network.** Once, on arrival. You can connect again by hand.
 - **Protection off or paused** means normal internet: VPN Guard disconnects the VPN it started by
   itself, and starts it again when protection comes back. A VPN you connected by hand stays on.
 
 Only one VPN runs at a time: choosing another VPN disconnects the old one.
+
+<img src="images/settings-vpn-backup-light.png" width="620" alt="Settings, VPN: a backup VPN is connected, the chosen VPN shows why it failed">
+
+### When the VPN does not connect
+
+VPN Guard tells you why, in plain words:
+
+| It says | What it means |
+|---|---|
+| **Login refused** | The server refused the name or password. Or the account is in use on another device, or turned off on the server. |
+| **Server did not answer** | The server is down or has a new address, or this network blocks VPNs. |
+| **Shared secret not accepted** | The server answered, but the secure connection could not be set up. |
+| **Server name not found** | The server's name could not be looked up. |
+| **Connection lost** | It was connected, then the server stopped answering. |
+| **Could not connect** | macOS did not say why. |
+
+You see it in the popover (**Blocked**, with the reason and a countdown to the next try), as a red
+label in the VPN list, and in the VPN's ⓘ sheet with what to check. For L2TP and PPTP VPN Guard reads
+the reason from the macOS log `/var/log/ppp.log`; it never sees your password.
+
+<p>
+  <img src="images/popover-failed-light.png" width="320" alt="Popover: Blocked, the server refused the login, next try in 30 s">
+  <img src="images/sheet-vpn-detail-failed-light.png" width="460" alt="VPN details: why it could not connect and what to check">
+</p>
 
 ## 5. WireGuard on a MikroTik router
 
@@ -240,13 +279,43 @@ Wi‑Fi drop on the same network keeps it.
 
 Open it from the slider button in the popover. The menu is at the top:
 
-- **General.** The protection switch, *Open VPN Guard at login*, and what each menu bar icon means.
+- **General.** The protection switch, *Open VPN Guard at login*, notifications, the protection test,
+  and what each menu bar icon means. *Open at login* is on after the welcome window. Keep it on: the
+  firewall works without the app, but only the app starts your VPN, so after a restart outside a
+  trusted network you would have no internet until you open VPN Guard.
 - **Networks.** The network you are on, your trusted networks, and the main switch.
 - **VPN.** The VPN in use, your VPN list, the automatic options, and the allowed servers.
 - **Helper & About.** Version, helper status, firewall state, WireGuard engine, *Reinstall*, *Show
   Log*, *Uninstall*.
 
 <img src="images/settings-general-light.png" width="620" alt="Settings: General">
+
+### Notifications
+
+*Notify me when the internet is blocked* is on by default. macOS asks once if VPN Guard may show
+notifications. If you missed that question or said no, Settings → General shows a button to allow
+them. You get a notification only when something needs you:
+
+- **Internet blocked**: you stayed blocked for about 20 seconds, or the VPN failed 3 times. It says why.
+- **Using your backup VPN**: the chosen VPN failed and a backup is connected.
+- **Protected again**: after one of the two above.
+
+Joining a café where the VPN connects in a few seconds makes no noise.
+
+### Protection test
+
+**Test Now…** checks that the kill switch really holds. On each network card that is not trusted,
+VPN Guard tries to get out *outside* the VPN: a connection to `1.1.1.1`, a DNS lookup, and IPv6 if the
+network has it. Every try must fail. It also checks that the internet works through the VPN.
+
+- **No leaks found**: nothing got out.
+- **Leak found**: something got out. Reinstall the helper (Settings → Helper & About) and test again.
+- **Nothing to test here**: you are on a trusted network, where the internet is open on purpose. Test
+  on a network you don't trust, for example your iPhone hotspot.
+
+The test only contacts `1.1.1.1` (Cloudflare) and asks it for `apple.com`. It sends nothing about you.
+
+<img src="images/sheet-protection-test-pass-light.png" width="460" alt="Protection test: No leaks found">
 
 ## 8. Command line
 

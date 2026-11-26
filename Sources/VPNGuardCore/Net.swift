@@ -28,6 +28,43 @@ public enum Net {
         return s.withCString { inet_pton(AF_INET6, $0, &addr) } == 1
     }
 
+    /// An address a tunnel can really use as its own: not 0.0.0.0/8, loopback, multicast or broadcast
+    /// (IPv4), not ::, ::1 or multicast (IPv6). A config file with 0.0.0.0 was made before it was ready.
+    public static func isUsableHostAddress(_ ip: String) -> Bool {
+        if isIPv4(ip) {
+            guard let first = ip.split(separator: ".").first.flatMap({ Int($0) }) else { return false }
+            return first != 0 && first != 127 && first < 224
+        }
+        if isIPv6(ip) {
+            var a = in6_addr()
+            guard inet_pton(AF_INET6, ip, &a) == 1 else { return false }
+            let b = withUnsafeBytes(of: &a) { Array($0) }
+            let unspecified = b.allSatisfy { $0 == 0 }
+            let loopback = b.dropLast().allSatisfy { $0 == 0 } && b.last == 1
+            return !unspecified && !loopback && b[0] != 0xFF
+        }
+        return false
+    }
+
+    /// A macOS network service ID (a UUID such as 5F1D2C3A-9B7E-4A60-8D21-0C4E6F8A1B2D).
+    public static func isServiceID(_ s: String) -> Bool {
+        s.count == 36 && UUID(uuidString: s) != nil
+    }
+
+    /// Is the IPv4 address `ip` inside `cidr` (e.g. 192.0.2.1 in 192.0.2.0/24)? IPv4 only.
+    public static func cidrContains(_ cidr: String, ip: String) -> Bool {
+        let parts = cidr.split(separator: "/")
+        guard parts.count == 2, let bits = Int(parts[1]), (0...32).contains(bits),
+              let net = ipv4Value(String(parts[0])), let addr = ipv4Value(ip) else { return false }
+        let mask: UInt32 = bits == 0 ? 0 : ~UInt32(0) << UInt32(32 - bits)
+        return net & mask == addr & mask
+    }
+
+    private static func ipv4Value(_ s: String) -> UInt32? {
+        guard isIPv4(s) else { return nil }
+        return s.split(separator: ".").compactMap { UInt32($0) }.reduce(0) { $0 << 8 | $1 }
+    }
+
     /// 10.8.0.2/32 or fd00::2/128.
     public static func isCIDR(_ s: String) -> Bool {
         let parts = s.split(separator: "/", omittingEmptySubsequences: false)
@@ -114,3 +151,15 @@ extension Array where Element: Hashable {
         return filter { seen.insert($0).inserted }
     }
 }
+
+/// Names people give to networks and VPNs.
+public enum DisplayName {
+    /// One line, no control characters, trimmed, at most 64 characters. Nil if nothing is left.
+    public static func clean(_ raw: String) -> String? {
+        let s = raw.filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }
+            .trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return nil }
+        return String(s.prefix(64)).trimmingCharacters(in: .whitespaces)
+    }
+}
+

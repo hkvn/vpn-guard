@@ -7,6 +7,10 @@ struct PopoverView: View {
     @Environment(\.openWindow) private var openWindow
     /// After a few uses the "press and hold" hint is not needed any more.
     @AppStorage("orbUses") private var orbUses = 0
+    /// The content's own size; the menu bar window is kept exactly this big.
+    @State private var contentSize: CGSize = .zero
+    /// False while the popover is closed: the shield and glow stop animating then.
+    @State private var onScreen = true
 
     var body: some View {
         let look = model.look
@@ -53,7 +57,9 @@ struct PopoverView: View {
         .frame(width: 340)
         // No animation on the whole popover: an animated height change left the menu bar window taller
         // than its content (empty bands above and below, broken corners). Only the glow and the orb animate.
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { MenuBarPanel.fit(contentSize: $0) }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { contentSize = $0 }
+        .background(MenuBarWindowFitter(size: contentSize, visible: $onScreen))
+        .environment(\.orbPaused, !onScreen)
         .onAppear { model.refresh() }
     }
 
@@ -112,12 +118,12 @@ struct PopoverView: View {
     // MARK: Cards
 
     private var vpnCard: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            InfoCard(symbol: model.selectedVPN?.symbol ?? "globe",
-                     tone: model.selectedVPN?.engine == .wireGuard ? .green : nil,
-                     title: model.selectedVPN?.name ?? "No VPN chosen",
+        TimelineView(.periodic(from: .now, by: model.showsRetryCountdown ? 1 : 30)) { context in
+            InfoCard(symbol: model.activeVPN?.symbol ?? "globe",
+                     tone: model.activeVPN?.engine == .wireGuard ? .green : nil,
+                     title: model.activeVPN?.name ?? "No VPN chosen",
                      detail: model.vpnDetail(now: context.date)) {
-                if model.selectedVPN != nil {
+                if model.activeVPN != nil {
                     Toggle("VPN", isOn: Binding(
                         get: { model.vpnState.isUp },
                         set: { $0 ? model.connectVPN() : model.disconnectVPN() }

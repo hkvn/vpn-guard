@@ -42,6 +42,7 @@ struct ProtectionOrb: View {
     static let holdDuration = 0.7
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbPaused) private var orbPaused
     @State private var holding = false
     @State private var progress: CGFloat = 0
     @State private var hovering = false
@@ -51,15 +52,28 @@ struct ProtectionOrb: View {
 
     var body: some View {
         let motion = OrbMotion.of(glyph, tone: tone)
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || !motion.isAnimated)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            ZStack {
+        let live = OrbAnimation.live && !reduceMotion && !orbPaused && motion.isAnimated
+        ZStack {
+            if live {
+                // Run by Core Animation: no work for the app per frame.
+                if motion.haloPeriod != nil {
+                    let halo = LayerPulse(content: .halo(diameter: size), tone: tone, motion: motion)
+                    halo.frame(width: halo.size.width, height: halo.size.height)
+                }
+                if motion.arcPeriod != nil {
+                    let arc = LayerPulse(content: .arc(diameter: size + 20), tone: tone, motion: motion)
+                    arc.frame(width: arc.size.width, height: arc.size.height)
+                        .transition(.opacity)
+                }
+            } else {
+                // One still frame: previews, Reduce Motion, and the closed popover.
+                let t = Date().timeIntervalSinceReferenceDate
                 halo(motion, t)
-                ripple
                 arc(motion, t)
-                holdRing
-                orb
             }
+            ripple
+            holdRing
+            orb
         }
         .frame(width: size + 36, height: size + 36)
         .contentShape(Circle().inset(by: 14))
@@ -184,14 +198,34 @@ struct BreathingGlow: View {
     var height: CGFloat = 260
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbPaused) private var orbPaused
 
     var body: some View {
         let motion = OrbMotion.of(glyph, tone: tone)
-        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: reduceMotion || motion.haloPeriod == nil)) { context in
-            let w = motion.haloPeriod.map { OrbMotion.wave(context.date.timeIntervalSinceReferenceDate, period: $0) } ?? 1
-            StateGlow(tone: tone, width: width, height: height)
-                .opacity(reduceMotion ? 0.85 : 0.7 + 0.3 * w)
+        Group {
+            if OrbAnimation.live, !reduceMotion, !orbPaused, motion.haloPeriod != nil {
+                LayerPulse(content: .glow(width: width, height: height), tone: tone, motion: motion)
+                    .frame(width: width, height: height)
+            } else {
+                let w = motion.haloPeriod.map { OrbMotion.wave(Date().timeIntervalSinceReferenceDate, period: $0) } ?? 1
+                StateGlow(tone: tone, width: width, height: height)
+                    .opacity(reduceMotion ? 0.85 : 0.7 + 0.3 * w)
+            }
         }
         .allowsHitTesting(false)
     }
 }
+
+/// True while the window that holds the orb is hidden (the menu bar popover when closed): the
+/// animations stop, because SwiftUI keeps running them for a hidden menu bar window.
+private struct OrbPausedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var orbPaused: Bool {
+        get { self[OrbPausedKey.self] }
+        set { self[OrbPausedKey.self] = newValue }
+    }
+}
+

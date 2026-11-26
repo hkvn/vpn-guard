@@ -2,8 +2,12 @@ import Foundation
 
 public enum Policy {
     /// Decides open or locked. When in doubt, it locks.
-    public static func decide(config: GuardConfig, links: [NetworkLink], now: Date) -> (mode: GuardMode, reason: GuardReason) {
+    /// `routersUnconfirmed`: asleep, or just woken and the routers are not read again yet
+    /// (`WakeGuard`). The Mac may be somewhere else now, so neither trust nor a pause counts yet.
+    public static func decide(config: GuardConfig, links: [NetworkLink], now: Date,
+                              routersUnconfirmed: Bool = false) -> (mode: GuardMode, reason: GuardReason) {
         if !config.enabled { return (.open, .disabled) }
+        if routersUnconfirmed { return (.locked, links.isEmpty ? .noNetwork : .resolving) }
         if config.isPaused(at: now) { return (.open, .paused) }
         if links.isEmpty { return (.locked, .noNetwork) }
         let trusted = links.filter { $0.trustedName != nil }

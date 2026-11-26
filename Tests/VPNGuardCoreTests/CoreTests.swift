@@ -80,6 +80,46 @@ final class PolicyTests: XCTestCase {
         XCTAssertEqual(d.reason, .trusted)
     }
 
+    /// Lid closed at home, opened at a café: until the router is read again, home's trust and a pause
+    /// do not count. Protection off stays off.
+    func testUnconfirmedRoutersLockEvenTrustedOrPaused() {
+        var c = GuardConfig(enabled: true, trusted: [office])
+        let home = [link(office.routerMAC, trusted: "Office")]
+        XCTAssertEqual(Policy.decide(config: c, links: home, now: now, routersUnconfirmed: true).mode, .locked)
+        XCTAssertEqual(Policy.decide(config: c, links: home, now: now, routersUnconfirmed: true).reason, .resolving)
+        XCTAssertEqual(Policy.decide(config: c, links: [], now: now, routersUnconfirmed: true).reason, .noNetwork)
+        c.pausedUntil = now.addingTimeInterval(600)
+        XCTAssertEqual(Policy.decide(config: c, links: home, now: now, routersUnconfirmed: true).mode, .locked)
+        c.enabled = false
+        XCTAssertEqual(Policy.decide(config: c, links: home, now: now, routersUnconfirmed: true).mode, .open)
+    }
+
+    func testWakeGuard() {
+        var w = WakeGuard()
+        XCTAssertFalse(w.checking)
+        XCTAssertFalse(w.update(routersFresh: true, now: now), "nothing to check before a sleep")
+
+        w.willSleep()
+        XCTAssertTrue(w.checking)
+        XCTAssertFalse(w.update(routersFresh: true, now: now), "asleep: a router read now is still the old place")
+        w.sleepCancelled()
+        XCTAssertFalse(w.checking)
+
+        w.willSleep()
+        w.didWake(at: now)
+        XCTAssertTrue(w.checking)
+        XCTAssertFalse(w.update(routersFresh: false, now: now.addingTimeInterval(2)))
+        XCTAssertTrue(w.checking)
+        XCTAssertTrue(w.update(routersFresh: true, now: now.addingTimeInterval(3)))
+        XCTAssertFalse(w.checking)
+
+        w.willSleep()
+        w.didWake(at: now)
+        XCTAssertTrue(w.update(routersFresh: false, now: now.addingTimeInterval(WakeGuard.maxCheck)),
+                      "a router that never answers does not keep the check on for ever")
+        XCTAssertFalse(w.checking)
+    }
+
     /// 1.2.0: office + iPhone USB locks only the untrusted card ("mixed"), not the whole Mac.
     func testTrustedPlusUntrustedIsMixed() {
         let c = GuardConfig(enabled: true, trusted: [office])
@@ -774,5 +814,244 @@ final class WireGuardTests: XCTestCase {
         for r in [GuardReason.untrusted, .mixed, .resolving, .noNetwork, .trusted] {
             XCTAssertFalse(AutoVPN.shouldStopOwnVPN(reason: r), "\(r)")
         }
+    }
+
+    // MARK: - WireGuard files made before they were ready (1.2.3)
+
+    func testUsableHostAddresses() {
+        for ok in ["10.8.0.2", "192.0.2.222", "100.64.0.7", "fd00::2", "2001:db8::5"] {
+            XCTAssertTrue(Net.isUsableHostAddress(ok), ok)
+        }
+        for bad in ["0.0.0.0", "0.1.2.3", "127.0.0.1", "224.0.0.1", "255.255.255.255", "::", "::1", "ff02::1", "nope"] {
+            XCTAssertFalse(Net.isUsableHostAddress(bad), bad)
+        }
+    }
+
+    func testWireGuardFileWithZeroAddressIsRefused() throws {
+        let conf = """
+        [Interface]
+        PrivateKey = \(WireGuardKey.generatePrivate())
+        Address = 0.0.0.0/32
+        DNS = 1.1.1.1
+
+        [Peer]
+        PublicKey = \(WireGuardKey.publicKey(fromPrivate: WireGuardKey.generatePrivate())!)
+        AllowedIPs = 0.0.0.0/24
+        Endpoint = vpn.example.com:51820
+        """
+        // Import refuses the half-made file and says why (the first problem: the address).
+        XCTAssertThrowsError(try WireGuardConf.parse(conf, name: "Office")) { error in
+            let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            XCTAssertTrue(text.contains("0.0.0.0/32") && text.contains("download it again"), text)
+        }
+        // With a real address, the odd AllowedIPs is the next thing it explains.
+        let onlyAllowed = conf.replacingOccurrences(of: "Address = 0.0.0.0/32", with: "Address = 192.0.2.222/32")
+        XCTAssertThrowsError(try WireGuardConf.parse(onlyAllowed, name: "Office")) { error in
+            let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            XCTAssertTrue(text.contains("0.0.0.0/24") && text.contains("0.0.0.0/0"), text)
+        }
+
+        let good = conf.replacingOccurrences(of: "Address = 0.0.0.0/32", with: "Address = 192.0.2.222/32")
+            .replacingOccurrences(of: "AllowedIPs = 0.0.0.0/24", with: "AllowedIPs = 192.0.2.0/24")
+        XCTAssertEqual(try WireGuardConf.parse(good, name: "Office").tunnel.problems(), [])
+    }
+
+    // MARK: - VPN that only carries some addresses (1.2.3)
+
+    func testCIDRContains() {
+        XCTAssertTrue(Net.cidrContains("192.0.2.0/24", ip: "192.0.2.1"))
+        XCTAssertFalse(Net.cidrContains("192.0.2.0/24", ip: "192.0.3.1"))
+        XCTAssertTrue(Net.cidrContains("0.0.0.0/0", ip: "203.0.113.9"))
+        XCTAssertTrue(Net.cidrContains("10.0.0.0/8", ip: "10.200.1.1"))
+        XCTAssertFalse(Net.cidrContains("bad", ip: "10.0.0.1"))
+        XCTAssertFalse(Net.cidrContains("192.0.2.0/33", ip: "192.0.2.1"))
+    }
+
+    func testTrustedNetworkCarriedByRanges() {
+        let office = TrustedNetwork(name: "Office", routerMAC: "aa:bb:cc:00:00:01", routerIP: "192.0.2.1")
+        let c = GuardConfig(enabled: true, trusted: [office])
+        XCTAssertEqual(c.trustedNetworkName(carriedBy: ["192.0.2.0/24"]), "Office")
+        XCTAssertNil(c.trustedNetworkName(carriedBy: ["198.51.100.0/24"]))
+    }
+
+    // MARK: - Rename a VPN (1.2.3)
+
+    func testDisplayNameClean() {
+        XCTAssertEqual(DisplayName.clean("  Office VPN  "), "Office VPN")
+        XCTAssertEqual(DisplayName.clean("Office\nVPN"), "OfficeVPN")
+        XCTAssertEqual(DisplayName.clean("Office\u{0007}VPN"), "OfficeVPN")
+        XCTAssertNil(DisplayName.clean("   "))
+        XCTAssertNil(DisplayName.clean("\n\t"))
+        XCTAssertEqual(DisplayName.clean(String(repeating: "a", count: 100))?.count, 64)
+    }
+
+    func testServiceIDCheck() {
+        XCTAssertTrue(Net.isServiceID("5F1D2C3A-9B7E-4A60-8D21-0C4E6F8A1B2D"))
+        XCTAssertFalse(Net.isServiceID("wg:5F1D2C3A-9B7E-4A60-8D21-0C4E6F8A1B2D"))
+        XCTAssertFalse(Net.isServiceID("../NetworkServices"))
+        XCTAssertFalse(Net.isServiceID(""))
+    }
+
+    func testRenameCommandsRoundTrip() throws {
+        let id = UUID()
+        for c in [HelperCommand.wgRename(id: id, name: "Office tunnel"),
+                  .renameMacVPN(serviceID: "5F1D2C3A-9B7E-4A60-8D21-0C4E6F8A1B2D", name: "Office VPN")] {
+            let back = try JSONDecoder().decode(HelperCommand.self, from: JSONEncoder().encode(c))
+            XCTAssertEqual(String(describing: back), String(describing: c))
+        }
+    }
+
+    // MARK: - Why the VPN failed, backup VPN, notifications, protection test (1.3.0)
+
+    private let utc = TimeZone(identifier: "UTC")!
+
+    /// Lines as macOS writes them to /var/log/ppp.log (example data).
+    private func pppLog(_ lines: [String], at clock: String = "15:10") -> String {
+        lines.enumerated().map { "Thu Nov 26 \(clock):\(String(format: "%02d", 30 + $0.offset)) 2026 : \($0.element)" }
+            .joined(separator: "\n")
+    }
+
+    func testPPPLogLoginRefused() {
+        let log = pppLog([
+            "L2TP connecting to server 'vpn.example.com' (192.0.2.10)...",
+            "IPSec connection established",
+            "L2TP connection established.",
+            "rcvd [CHAP Challenge id=0x1 <00>, name = \"alex\"]",
+            "rcvd [CHAP Failure id=0x1 \"E=691 R=1 C=00 V=0 M=Good luck!\"]",
+            "MS-CHAP authentication failed: Good luck!",
+            "Connection terminated.",
+        ])
+        XCTAssertEqual(PPPLog.lastFailure(in: log, server: "vpn.example.com", timeZone: utc), .loginRefused(code: 691))
+        XCTAssertEqual(PPPLog.lastFailure(in: log, timeZone: utc), .loginRefused(code: 691))
+        // The last attempt in the log belongs to another VPN: say nothing.
+        XCTAssertNil(PPPLog.lastFailure(in: log, server: "other.example.net", timeZone: utc))
+        XCTAssertEqual(PPPLog.lastFailure(in: log.replacingOccurrences(of: "E=691", with: "E=647"), timeZone: utc),
+                       .loginRefused(code: 647))
+    }
+
+    func testPPPLogServerDidNotAnswerAndSecret() {
+        let noAnswer = pppLog([
+            "L2TP connecting to server 'vpn.example.com' (192.0.2.10)...",
+            "IPSec connection started",
+            "IPSec phase 1 client started",
+            "IPSec connection failed",
+        ])
+        XCTAssertEqual(PPPLog.lastFailure(in: noAnswer, timeZone: utc), .noAnswer)
+        let secret = pppLog([
+            "L2TP connecting to server 'vpn.example.com' (192.0.2.10)...",
+            "IPSec phase 1 client started",
+            "IPSec phase 1 server replied",
+            "IPSec connection failed",
+        ])
+        XCTAssertEqual(PPPLog.lastFailure(in: secret, timeZone: utc), .secretRefused)
+    }
+
+    func testPPPLogOnlyLooksAtThisAttempt() {
+        // An older refused login, then an attempt that worked: no failure.
+        let old = pppLog(["L2TP connecting to server 'vpn.example.com' (192.0.2.10)...",
+                          "MS-CHAP authentication failed: Good luck!"], at: "15:10")
+        let good = pppLog(["L2TP connecting to server 'vpn.example.com' (192.0.2.10)...",
+                           "L2TP connection established.", "ipcp: up"], at: "15:49")
+        XCTAssertNil(PPPLog.lastFailure(in: old + "\n" + good, timeZone: utc))
+        // With a start time: lines before it do not count, even without a "connecting" line after it.
+        var c = Calendar(identifier: .gregorian); c.timeZone = utc
+        let start = c.date(from: DateComponents(year: 2026, month: 11, day: 26, hour: 15, minute: 40))!
+        XCTAssertNil(PPPLog.lastFailure(in: old, since: start, timeZone: utc))
+        XCTAssertEqual(PPPLog.lastFailure(in: old, since: start.addingTimeInterval(-3600), timeZone: utc),
+                       .loginRefused(code: nil))
+        // Connected, then the server went silent.
+        let lost = pppLog(["L2TP connecting to server 'vpn.example.com' (192.0.2.10)...", "ipcp: up",
+                           "No response to 3 echo-requests", "Connection terminated."])
+        XCTAssertEqual(PPPLog.lastFailure(in: lost, timeZone: utc), .connectionLost)
+        // A user disconnect is not a failure.
+        let stopped = pppLog(["L2TP connecting to server 'vpn.example.com' (192.0.2.10)...", "ipcp: up",
+                              "Terminating on signal 15.", "Connection terminated."])
+        XCTAssertNil(PPPLog.lastFailure(in: stopped, timeZone: utc))
+        XCTAssertNil(PPPLog.lastFailure(in: "", timeZone: utc))
+    }
+
+    func testPPPLogDateWithOneDigitDay() {
+        var c = Calendar(identifier: .gregorian); c.timeZone = utc
+        XCTAssertEqual(PPPLog.date(of: "Thu Nov  5 09:01:02 2026 : ipcp: up", timeZone: utc),
+                       c.date(from: DateComponents(year: 2026, month: 11, day: 5, hour: 9, minute: 1, second: 2)))
+        XCTAssertNil(PPPLog.date(of: "no date here", timeZone: utc))
+    }
+
+    func testVPNFailureWords() {
+        XCTAssertEqual(VPNFailure.loginRefused(code: 691).label, "Login refused")
+        XCTAssertEqual(VPNFailure.loginRefused(code: 691).sentence(vpn: "Office VPN"),
+                       "Office VPN could not connect: the server refused the login. The account may be in use on another device.")
+        XCTAssertEqual(VPNFailure.loginRefused(code: 648).brief(vpn: "Office VPN"),
+                       "Office VPN could not connect: the password has expired.")
+        XCTAssertTrue(VPNFailure.loginRefused(code: 691).explanation.contains("(error 691)"))
+        XCTAssertEqual(VPNFailure.unknown.brief(vpn: "Office VPN"), "Office VPN could not connect.")
+        XCTAssertEqual(VPNFailure.message("The key is missing.").sentence(vpn: "Home"), "Home could not connect. The key is missing.")
+        XCTAssertEqual(VPNFailure.from(pppLastCause: 19), .loginRefused(code: nil))
+        XCTAssertNil(VPNFailure.from(pppLastCause: 5))   // the user stopped it
+    }
+
+    func testBackupVPNOrder() {
+        let all = ["main", "b1", "b2"]
+        XCTAssertEqual(BackupVPN.next(main: "main", failed: ["main"], candidates: all), "b1")
+        XCTAssertEqual(BackupVPN.next(main: "main", failed: ["main", "b1"], candidates: all), "b2")
+        XCTAssertNil(BackupVPN.next(main: "main", failed: ["main", "b1", "b2"], candidates: all))
+        XCTAssertNil(BackupVPN.next(main: "main", failed: ["main"], candidates: ["main"]))
+    }
+
+    func testNoticesOnlyWhenNeeded() {
+        // Joined a café, VPN up after a few seconds: silent.
+        XCTAssertNil(Notices.decide(situation: .blocked, blockedFor: 6, failedTries: 0, lastSent: nil))
+        XCTAssertNil(Notices.decide(situation: .protected, blockedFor: 0, failedTries: 0, lastSent: nil))
+        // Blocked for a while, or three failed tries: tell once.
+        XCTAssertEqual(Notices.decide(situation: .blocked, blockedFor: 21, failedTries: 0, lastSent: nil), .blocked)
+        XCTAssertEqual(Notices.decide(situation: .blocked, blockedFor: 4, failedTries: 3, lastSent: nil), .blocked)
+        XCTAssertNil(Notices.decide(situation: .blocked, blockedFor: 300, failedTries: 9, lastSent: .blocked))
+        // Backup in use, then the good news once.
+        XCTAssertEqual(Notices.decide(situation: .backup, blockedFor: 0, failedTries: 0, lastSent: .blocked), .backup)
+        XCTAssertNil(Notices.decide(situation: .backup, blockedFor: 0, failedTries: 0, lastSent: .backup))
+        XCTAssertEqual(Notices.decide(situation: .protected, blockedFor: 0, failedTries: 0, lastSent: .blocked), .protectedAgain)
+        XCTAssertNil(Notices.decide(situation: .protected, blockedFor: 0, failedTries: 0, lastSent: .protectedAgain))
+        XCTAssertNil(Notices.decide(situation: .quiet, blockedFor: 900, failedTries: 9, lastSent: nil))
+
+        XCTAssertEqual(Notices.text(.blocked, vpn: "Office VPN", reason: .loginRefused(code: 691)).body,
+                       "Office VPN could not connect: the server refused the login.")
+        XCTAssertEqual(Notices.text(.backup, vpn: "Home VPN", main: "Office VPN").body,
+                       "Office VPN could not connect. Home VPN is used on this network.")
+        XCTAssertEqual(Notices.text(.protectedAgain, vpn: "Office VPN").title, "Protected again")
+    }
+
+    func testLeakReport() {
+        let wifi = LeakProbe(interface: "en0", label: "Wi-Fi", internetGotOut: false, dnsGotOut: false, ipv6GotOut: nil)
+        let good = LeakTest.report(rulesActive: true, probes: [wifi], vpnName: "Office VPN", vpnConnected: true, viaVPNWorks: true)
+        XCTAssertEqual(good.verdict, .noLeaks)
+        XCTAssertEqual(good.subtitle, "Tested on Wi-Fi (not trusted) with Office VPN")
+        XCTAssertEqual(good.checks.map(\.result), [.pass, .pass, .pass, .skipped, .pass])
+
+        var leaky = wifi
+        leaky.internetGotOut = true
+        let bad = LeakTest.report(rulesActive: true, probes: [leaky], vpnName: "Office VPN", vpnConnected: true, viaVPNWorks: true)
+        XCTAssertEqual(bad.verdict, .leak)
+        XCTAssertEqual(bad.checks.first { $0.id == "internet" }?.result, .fail)
+
+        var v6 = wifi
+        v6.ipv6GotOut = true
+        XCTAssertEqual(LeakTest.report(rulesActive: true, probes: [v6], vpnName: nil, vpnConnected: false, viaVPNWorks: nil).verdict, .leak)
+
+        // Blocked, VPN off: nothing got out, and that is a pass.
+        let blocked = LeakTest.report(rulesActive: true, probes: [wifi], vpnName: "Office VPN", vpnConnected: false, viaVPNWorks: nil)
+        XCTAssertEqual(blocked.verdict, .noLeaks)
+        XCTAssertEqual(blocked.checks.last?.result, .skipped)
+        // A probe that could not run is not a pass.
+        var unknown = wifi
+        unknown.internetGotOut = nil
+        XCTAssertEqual(LeakTest.report(rulesActive: true, probes: [unknown], vpnName: nil, vpnConnected: false, viaVPNWorks: nil)
+            .checks.first { $0.id == "internet" }?.result, .skipped)
+        XCTAssertEqual(LeakTest.report(rulesActive: false, probes: [wifi], vpnName: nil, vpnConnected: false, viaVPNWorks: nil).verdict, .leak)
+
+        XCTAssertNil(LeakTest.withoutProbes(reason: .untrusted, trustedNames: ""))
+        XCTAssertNil(LeakTest.withoutProbes(reason: .mixed, trustedNames: "Office"))
+        XCTAssertEqual(LeakTest.withoutProbes(reason: .trusted, trustedNames: "Office")?.verdict, .nothingToTest)
+        XCTAssertEqual(LeakTest.withoutProbes(reason: .trusted, trustedNames: "Office")?.subtitle, "You are at Office, a trusted network")
+        XCTAssertEqual(LeakTest.withoutProbes(reason: .disabled, trustedNames: "")?.verdict, .notOn)
     }
 }

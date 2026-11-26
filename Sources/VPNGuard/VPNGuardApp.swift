@@ -7,6 +7,7 @@ struct VPNGuardApp: App {
     init() {
         // `VPNGuard --render-previews <folder>` draws the UI with made-up data to PNG files.
         PreviewRenderer.runIfRequested()
+        ProtectionProbe.runIfRequested()
     }
 
     var body: some Scene {

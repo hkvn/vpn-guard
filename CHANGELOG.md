@@ -2,6 +2,52 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
+## 1.3.0 — unreleased
+
+### Added
+- **VPN Guard says why the VPN did not connect.** For L2TP and PPTP it reads what macOS wrote down
+  and says it in plain words: login refused (with the server's error number), the server did not
+  answer, the shared secret was not accepted, the server name was not found, or the connection was
+  lost. For WireGuard: the server does not answer. You see it in the popover ("Blocked" now tells the
+  reason and counts down to the next try), as a red label in the VPN list, and in the VPN's details.
+- **Backup VPN** (Settings → VPN → *Use my other VPNs as a backup*, off by default). After 3 failed
+  tries with your chosen VPN, VPN Guard tries the next VPN in the list that carries all traffic. Your
+  ✓ stays. On the next network, or with *Try Again*, it starts with your chosen VPN again.
+- **Notifications** (Settings → General, on by default): when the internet stays blocked, when a
+  backup VPN is used, and when you are protected again after that. A normal connect makes no noise.
+- **Protection test** (Settings → General → *Test Now…*): tries to get out outside the VPN, straight
+  through each untrusted network card (internet, DNS, IPv6), and shows pass or fail. `VPNGuard --probe
+  en0` runs the same probes in a terminal.
+- **Rename a VPN**, like a trusted network: right-click it → Rename…, or Rename… in its details.
+  L2TP, PPTP and Cisco IPSec VPNs are renamed in macOS too (one name everywhere).
+- **"Office network only" VPNs.** A WireGuard VPN that carries only some addresses is labeled in the
+  VPN list, VPN Guard asks before you choose it, and while it is connected the popover shows an orange
+  "Office network only" state with a button to switch to a VPN that carries everything. Adding such a
+  tunnel no longer replaces the VPN you chose.
+
+### Fixed
+- **WireGuard import refuses half-made files** (for example `Address = 0.0.0.0/32`, made by a router
+  before the peer was ready) with a clear message, instead of failing to connect later.
+- **The popover window fits its content every time it opens.** If the content got shorter while it was
+  closed (for example after changing networks), it showed empty bands above and below.
+- **The Settings window is as tall as the page**, so there is no scroll bar unless the screen is small.
+- **VPNs from other apps** (for example Tailscale) are labeled *Other app* again instead of IKEv2.
+- **A VPN changed in System Settings is allowed at once.** A new VPN, or a new server address for one,
+  only reached the lock list when you opened VPN Guard's Settings or restarted the app: until then the
+  VPN could not connect outside trusted networks.
+- **Open at login is on after the welcome window**, and Settings → General warns when it is off: the
+  firewall works without the app, but only the app starts your VPN after a restart.
+- **Closing the lid at home and opening it somewhere else** (a café) could let a few packets out
+  through the new Wi‑Fi in the split second before VPN Guard noticed the new network. Now the lock goes
+  on before the Mac sleeps, and after the wake a network counts as trusted only once its router has
+  answered again. At home the internet is back about a second after Wi‑Fi.
+- **Less work in the background.** The shield animation kept running after the popover was closed
+  (10–15% CPU all the time), and every 10 seconds the app redrew all its views even when nothing had
+  changed. With the popover closed VPN Guard now uses about 0% CPU.
+- **The shield animation is run by macOS** (Core Animation) instead of being drawn by the app 30 times
+  a second: with the popover open VPN Guard went from about 10% CPU to about 0%. It looks the same,
+  and it is limited to 20 frames per second (30 for the fast "connecting" spin).
+
 ## 1.2.2 — 2026-11-26
 
 From testing on a real Mac with office Wi‑Fi, a LAN cable and an iPhone over USB.

@@ -49,10 +49,13 @@ struct VPNDetailSheet: View {
 
     private var service: VPNService? { model.vpnServices.first { $0.id == serviceID } }
     private var chosen: Bool { model.selectedVPNID == serviceID }
+    /// In use here: the chosen VPN, or a backup standing in for it.
+    private var inUse: Bool { model.activeVPNID == serviceID }
 
     var body: some View {
         if let v = service {
             SheetFrame(symbol: v.symbol, tone: v.engine == .wireGuard ? .green : nil, title: v.name, subtitle: subtitle(v)) {
+                if let p = model.problem(for: v), !(inUse && model.vpnState.isUp) { problemCard(v, p) }
                 if v.needsSendAllFix { fixCard(v) }
                 SettingsCard {
                     if let server = v.remoteAddress, !server.isEmpty {
@@ -78,12 +81,20 @@ struct VPNDetailSheet: View {
                     RowDivider()
                     ToggleRow(title: "Use on untrusted networks", isOn: Binding(
                         get: { chosen },
-                        set: { model.selectedVPNID = $0 ? serviceID : nil }
+                        set: { on in
+                            if !on { model.selectedVPNID = nil } else if let v = model.vpnServices.first(where: { $0.id == serviceID }) { model.choose(v) }
+                        }
                     ))
                 }
                 if let t = model.tunnel(for: v) { wireGuardKeys(t) }
             } footer: {
-                if chosen {
+                if v.canRename {
+                    Button("Rename…") {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.renameVPN(v) }
+                    }
+                }
+                if inUse {
                     if model.vpnState.isUp {
                         Button("Disconnect") { model.disconnectVPN() }
                     } else {
@@ -114,8 +125,52 @@ struct VPNDetailSheet: View {
 
     private func subtitle(_ v: VPNService) -> String {
         let where_ = v.engine == .wireGuard ? "built in" : (v.isOtherApp ? "another app" : "VPN in macOS")
-        let state = chosen ? model.vpnState.text : "Not in use"
+        let state = inUse ? (model.backupVPNID == serviceID ? "\(model.vpnState.text) · backup" : model.vpnState.text)
+                          : (chosen ? "A backup is in use" : "Not in use")
         return "\(v.typeLabel) · \(where_) · \(state)"
+    }
+
+    /// The last failed connection in plain words (design: canvas "VPN details · last problem").
+    private func problemCard(_ v: VPNService, _ p: VPNProblem) -> some View {
+        let label = p.failure.label
+        let title = label == "Could not connect" || p.failure == .connectionLost
+            ? label : "Could not connect: \(label.prefix(1).lowercased())\(label.dropFirst())"
+        let when = Calendar.current.isDateInToday(p.at)
+            ? "today \(p.at.formatted(date: .omitted, time: .shortened))"
+            : p.at.formatted(date: .abbreviated, time: .shortened)
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Tone.red.text)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text(when).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                }
+                Text(p.failure.explanation)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    if v.engine == .macOS {
+                        Button("Open VPN Settings") { AppModel.openVPNSettings() }
+                            .buttonStyle(CardButtonStyle())
+                    }
+                    if chosen {
+                        Button("Try Again") {
+                            dismiss()
+                            model.retryVPN()
+                        }
+                        .buttonStyle(CardButtonStyle(prominent: true))
+                    }
+                }
+                .padding(.top, 6)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Tone.red.fill.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Tone.red.fill.opacity(0.30)))
     }
 
     private func mono(_ s: String) -> some View {
@@ -178,6 +233,134 @@ struct VPNDetailSheet: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+        }
+    }
+}
+
+// MARK: - Protection test
+
+/// Settings → General → Test Now…: tries to get out outside the VPN and shows pass or fail.
+/// Design: canvas "Protection test".
+struct ProtectionTestSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    /// Previews pass a ready report; the app runs the test when the sheet opens.
+    var preset: LeakReport? = nil
+    @State private var report: LeakReport?
+    @State private var testedAt: Date?
+    @State private var running = false
+
+    var body: some View {
+        let shown = preset ?? report
+        SheetFrame(symbol: symbol(shown), tone: tone(shown), title: shown?.title ?? "Testing…",
+                   subtitle: subtitle(shown)) {
+            if let shown {
+                if !shown.checks.isEmpty {
+                    SettingsCard {
+                        ForEach(Array(shown.checks.enumerated()), id: \.element.id) { index, check in
+                            if index > 0 { RowDivider(leading: 46) }
+                            row(check)
+                        }
+                    }
+                }
+                if shown.verdict == .noLeaks || shown.verdict == .leak {
+                    Text("The test only tries to reach \(LeakTest.testAddress) (Cloudflare), and asks it for apple.com. It sends nothing about you.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Trying to get out outside the VPN. This takes a few seconds.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
+            }
+        } footer: {
+            Button("Test Again") { run() }.disabled(running)
+            Spacer()
+            Button("Done") { dismiss() }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        }
+        .onAppear { if preset == nil { run() } }
+    }
+
+    private func row(_ check: LeakCheck) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: check.result == .pass ? "checkmark.circle.fill"
+                              : (check.result == .fail ? "xmark.circle.fill" : "minus.circle.fill"))
+                .font(.system(size: 17))
+                .foregroundStyle(check.result == .pass ? Tone.green.fill
+                                 : (check.result == .fail ? Tone.red.fill : Color.secondary.opacity(0.55)))
+                .accessibilityLabel(check.result == .pass ? "Passed" : (check.result == .fail ? "Failed" : "Not tested"))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(check.title).font(.system(size: 13, weight: .medium))
+                Text(check.detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private func symbol(_ r: LeakReport?) -> String {
+        switch r?.verdict {
+        case .leak: return "exclamationmark.shield"
+        case .notOn: return "shield.slash"
+        case .noLeaks, .nothingToTest: return "checkmark.shield"
+        case nil: return "shield"
+        }
+    }
+
+    private func tone(_ r: LeakReport?) -> Tone? {
+        switch r?.verdict {
+        case .noLeaks: return .green
+        case .leak: return .red
+        case .nothingToTest: return .blue
+        case .notOn, nil: return nil
+        }
+    }
+
+    private func subtitle(_ r: LeakReport?) -> String {
+        guard let r else { return "Checking that nothing gets out outside your VPN" }
+        guard let testedAt, r.verdict == .noLeaks || r.verdict == .leak else { return r.subtitle }
+        return "\(r.subtitle) · \(testedAt.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private func run() {
+        guard !running else { return }
+        guard let s = model.status else {
+            report = LeakReport(verdict: .notOn, title: "The helper is not answering",
+                                subtitle: "Reinstall it in Settings → Helper & About", checks: [])
+            return
+        }
+        if let fixed = LeakTest.withoutProbes(reason: s.reason, trustedNames: model.trustedNamesHere) {
+            report = fixed
+            return
+        }
+        running = true
+        report = nil
+        let cards = s.links.filter { $0.trustedName == nil }.map { ($0.interface, $0.label) }
+        let rulesActive = s.mode == .locked && s.firewallError == nil
+        let vpnName = model.activeVPN?.name
+        let vpnConnected = model.vpnState == .connected
+        DispatchQueue.global(qos: .userInitiated).async {
+            let probes = cards.map { ProtectionProbe.run(interface: $0.0, label: $0.1) }
+            let via: Bool? = vpnConnected ? ProtectionProbe.reachesInternet() : nil
+            let result = LeakTest.report(rulesActive: rulesActive, probes: probes, vpnName: vpnName,
+                                         vpnConnected: vpnConnected, viaVPNWorks: via)
+            DispatchQueue.main.async {
+                report = result
+                testedAt = Date()
+                running = false
+            }
         }
     }
 }

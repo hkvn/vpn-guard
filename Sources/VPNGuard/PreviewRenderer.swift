@@ -13,6 +13,7 @@ enum PreviewRenderer {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
+        OrbAnimation.live = false   // bitmaps do not include Core Animation layers
 
         let looks: [(String, NSAppearance.Name)] = [("dark", .darkAqua), ("light", .aqua)]
         for (name, appearance) in looks {
@@ -35,12 +36,46 @@ enum PreviewRenderer {
             twoModel.settingsPane = .networks
             render(SettingsView().environmentObject(twoModel), appearance: appearance,
                    to: dir.appendingPathComponent("settings-networks-two-\(name).png"))
+            // VPN list with a WireGuard tunnel that only carries the office network.
+            let partialModel = AppModel(preview: .partial)
+            partialModel.settingsPane = .vpn
+            render(SettingsView().environmentObject(partialModel), appearance: appearance,
+                   to: dir.appendingPathComponent("settings-vpn-partial-\(name).png"))
+            // The chosen VPN was refused: red label in the list; and the same with a backup VPN in use.
+            for scenario in [AppModel.PreviewScenario.failed, .backup] {
+                let m = AppModel(preview: scenario)
+                m.settingsPane = .vpn
+                render(SettingsView().environmentObject(m), appearance: appearance,
+                       to: dir.appendingPathComponent("settings-vpn-\(scenario.rawValue)-\(name).png"))
+            }
+            let failedModel = AppModel(preview: .failed)
+            render(VPNDetailSheet(serviceID: "preview") { _ in }.environmentObject(failedModel), appearance: appearance,
+                   to: dir.appendingPathComponent("sheet-vpn-detail-failed-\(name).png"))
+            // Protection test: no leaks, a leak, and a trusted network.
+            let wifi = LeakProbe(interface: "en0", label: "Wi-Fi", internetGotOut: false, dnsGotOut: false, ipv6GotOut: nil)
+            var leaky = wifi
+            leaky.internetGotOut = true
+            let tests: [(String, LeakReport?)] = [
+                ("pass", LeakTest.report(rulesActive: true, probes: [wifi], vpnName: "Office VPN", vpnConnected: true, viaVPNWorks: true)),
+                ("leak", LeakTest.report(rulesActive: true, probes: [leaky], vpnName: "Office VPN", vpnConnected: true, viaVPNWorks: true)),
+                ("trusted", LeakTest.withoutProbes(reason: .trusted, trustedNames: "Office")),
+            ]
+            for (label, report) in tests {
+                render(ProtectionTestSheet(preset: report).environmentObject(failedModel), appearance: appearance,
+                       to: dir.appendingPathComponent("sheet-protection-test-\(label)-\(name).png"))
+            }
             // General with the Color menu bar icon style chosen.
             let colorModel = AppModel(preview: .protected)
             colorModel.settingsPane = .general
             colorModel.menuBarIconStyle = .color
             render(SettingsView().environmentObject(colorModel), appearance: appearance,
                    to: dir.appendingPathComponent("settings-general-color-\(name).png"))
+            // General with "Open at login" off: the warning.
+            let noLoginModel = AppModel(preview: .protected)
+            noLoginModel.settingsPane = .general
+            noLoginModel.previewLaunchAtLogin = false
+            render(SettingsView().environmentObject(noLoginModel), appearance: appearance,
+                   to: dir.appendingPathComponent("settings-general-login-off-\(name).png"))
             // The real menu bar images, both styles, on a dark and a light menu bar.
             let kinds: [GlyphKind] = [.lock, .check, .dots, .cross, .pause, .dashed, .bang]
             let strip = VStack(spacing: 8) {
@@ -116,6 +151,14 @@ enum PreviewRenderer {
         hosting.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         hosting.layoutSubtreeIfNeeded()
+        // Views that size themselves after measuring (Settings follows its page height).
+        let measured = hosting.fittingSize
+        if abs(measured.height - size.height) > 0.5 || abs(measured.width - size.width) > 0.5 {
+            hosting.frame = NSRect(origin: .zero, size: measured)
+            window.setContentSize(measured)
+            hosting.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
         guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)

@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import notify
 import ServiceManagement
+import SystemConfiguration
 import SwiftUI
 import VPNGuardCore
 
@@ -17,9 +18,15 @@ struct StateLook: Equatable {
 
 enum PrimaryAction: Equatable {
     case connectVPN, connecting, chooseVPN, resume, turnOn, installHelper, reinstallHelper, updateHelper
+    /// Switch to a VPN that carries all traffic (from the "office network only" state).
+    case switchVPN(id: String, name: String)
+    /// After a failed connection: start over with the chosen VPN.
+    case tryAgain
 
     var title: String {
         switch self {
+        case .switchVPN(_, let name): return "Use \(name) instead"
+        case .tryAgain: return "Try Again"
         case .connectVPN: return "Connect VPN"
         case .connecting: return "Connecting…"
         case .chooseVPN: return "Choose a VPN…"
@@ -30,6 +37,12 @@ enum PrimaryAction: Equatable {
         case .updateHelper: return "Update Helper…"
         }
     }
+}
+
+/// Why a VPN did not connect, and when.
+struct VPNProblem: Equatable {
+    let failure: VPNFailure
+    let at: Date
 }
 
 /// One network card in the popover.
@@ -97,20 +110,46 @@ final class AppModel: ObservableObject {
     /// Name of a VPN the user just created as a profile; cleared when it shows up.
     @Published private(set) var pendingVPNName: String?
 
+    /// The VPN the user chose for untrusted networks (the ✓ in Settings).
     @Published var selectedVPNID: String? {
         didSet {
             guard selectedVPNID != oldValue, !isPreview else { return }
             UserDefaults.standard.set(selectedVPNID, forKey: Keys.vpnServiceID)
-            // One VPN at a time: take the old one down first (the watcher still points at it),
-            // then watch the new choice.
-            if Self.isWireGuardID(oldValue), status?.config.wgActive != nil { perform(.wgDisconnect) }
-            // Ask macOS, not the watcher: right after a switch its state can still be "disconnected"
-            // while the old VPN is connecting (bug: it kept connecting after a fast switch).
-            if let old = oldValue, !Self.isWireGuardID(old) { VPNConnection.stopService(old) }
+            // One VPN at a time: take the one in use down first, then watch the new choice.
+            let inUse = backupVPNID ?? oldValue
+            switchingVPN = true
+            backupVPNID = nil
+            stopVPN(id: inUse, replacedBy: nil)
+            forgetFailures()
             vpn.watch(serviceID: Self.isWireGuardID(selectedVPNID) ? nil : selectedVPNID)
+            switchingVPN = false
             syncVPNServers()
         }
     }
+    /// A backup VPN used on this network because the chosen one did not connect. Not saved.
+    @Published private(set) var backupVPNID: String?
+    /// Why a VPN did not connect, by VPN id. Forgotten when it connects or the network changes.
+    @Published private(set) var vpnProblems: [String: VPNProblem] = [:]
+    /// Settings → VPN: try the other VPNs when the chosen one fails. Off by default: a backup sends
+    /// your traffic out somewhere else than the VPN you chose.
+    @Published var useBackupVPN: Bool {
+        didSet {
+            guard useBackupVPN != oldValue, !isPreview else { return }
+            UserDefaults.standard.set(useBackupVPN, forKey: Keys.useBackupVPN)
+            if !useBackupVPN, backupVPNID != nil { switchActive(to: nil) }
+            runAutoVPN()
+        }
+    }
+    /// Settings → General: macOS notifications when the internet is blocked.
+    @Published var notifyWhenBlocked: Bool {
+        didSet {
+            guard notifyWhenBlocked != oldValue, !isPreview else { return }
+            UserDefaults.standard.set(notifyWhenBlocked, forKey: Keys.notifyWhenBlocked)
+            if notifyWhenBlocked { askForNotifications() }
+        }
+    }
+    /// What macOS says about VPN Guard's notifications: allowed, refused, or its question was not answered.
+    @Published private(set) var notificationAccess: Notifier.Access = .allowed
     @Published var autoConnect: Bool {
         didSet { UserDefaults.standard.set(autoConnect, forKey: Keys.autoConnect); runAutoVPN() }
     }
@@ -133,26 +172,52 @@ final class AppModel: ObservableObject {
         static let menuBarIconStyle = "menuBarIconStyle"
         static let onboardingDone = "onboardingDone"
         static let pauseLength = "pauseLength"
+        static let useBackupVPN = "useBackupVPN"
+        static let notifyWhenBlocked = "notifyWhenBlocked"
     }
 
     private let client = HelperClient()
     private let vpn = VPNConnection()
     private var notifyToken: Int32 = NOTIFY_TOKEN_INVALID
     private var timer: Timer?
-    private var isPreview = false
+    private(set) var isPreview = false
 
     // Auto VPN bookkeeping, reset whenever the network changes.
     private var networkKey = ""
-    private var userStoppedVPN = false
+    private var userStoppedVPN = false { willSet { if newValue != userStoppedVPN { objectWillChange.send() } } }
     private var autoDisconnectDoneFor: String?
-    private var lastAutoStart = Date.distantPast
-    private var autoStartAttempts = 0
-    /// When the router's hardware address started to be unknown (reason "resolving").
-    private var resolvingSince: Date?
+    private var lastAutoStart = Date.distantPast { willSet { if newValue != lastAutoStart { objectWillChange.send() } } }
+    private var autoStartAttempts = 0 { willSet { if newValue != autoStartAttempts { objectWillChange.send() } } }
+    /// When the router's hardware address started to be unknown (reason "resolving"), in awake time
+    /// (`awake`): the helper locks as "resolving" before sleep, and the hours asleep must not count.
+    private var resolvingSince: TimeInterval?
     /// The networks (card, address, router) the macOS VPN connected on.
     private var vpnConnectedOn: Set<String>?
     /// When the last network went away (a Wi-Fi blip or sleep keeps your VPN choice, see AutoVPN).
     private var networkGoneSince: Date?
+
+    // Failed connections and backup VPNs, reset when the network changes.
+    /// Failed tries in a row with the VPN in use.
+    private var failedTries = 0
+    /// VPNs that already failed on this network (so backups are not tried in circles).
+    private var failedHere: Set<String> = []
+    /// A macOS VPN attempt is running (connecting seen, no result yet), and when it started.
+    private var attemptOpen = false
+    private var attemptStarted = Date.distantPast
+    private var wgConnectingSince: Date?
+    /// True while this code moves the watcher to another VPN: its state changes are not failures.
+    private var switchingVPN = false
+    /// VPN Guard (or the user through it) asked macOS to stop the VPN: the next "disconnected" is not a failure.
+    private var stoppingVPN = false
+    /// A failure reason is being read from the macOS log.
+    private var readingFailure = false
+    private var retryTimerSet = false
+    // Notifications.
+    private let notifier = Notifier()
+    /// In awake time, like `resolvingSince`: a night asleep is not "blocked for hours".
+    private var blockedSince: TimeInterval?
+    private var lastNotice: VPNNotice?
+    static let retryDelays: [TimeInterval] = [0, 5, 15, 30, 60]
 
     private var pendingTimer: Timer?
     private var pendingStarted = Date.distantPast
@@ -168,27 +233,25 @@ final class AppModel: ObservableObject {
 
     init() {
         let d = UserDefaults.standard
-        d.register(defaults: [Keys.autoConnect: true, Keys.autoDisconnect: true])
+        d.register(defaults: [Keys.autoConnect: true, Keys.autoDisconnect: true, Keys.notifyWhenBlocked: true])
         selectedVPNID = d.string(forKey: Keys.vpnServiceID)
         autoConnect = d.bool(forKey: Keys.autoConnect)
         autoDisconnect = d.bool(forKey: Keys.autoDisconnect)
+        useBackupVPN = d.bool(forKey: Keys.useBackupVPN)
+        notifyWhenBlocked = d.bool(forKey: Keys.notifyWhenBlocked)
         menuBarIconStyle = MenuBarIconStyle(rawValue: d.string(forKey: Keys.menuBarIconStyle) ?? "") ?? .monochrome
 
         // Profiles hold a password: never leave old ones lying around.
         try? FileManager.default.removeItem(at: Self.profileFolder)
 
         reloadVPNServices()
+        watchNetworkSettings()
         vpn.onChange = { [weak self] state in
             guard let self else { return }
-            let previous = self.macVPNState
             if state == .connected, self.macVPNState != .connected { self.macConnectedSince = Date() }
             if state != .connected { self.macConnectedSince = nil }
             self.macVPNState = state
-            if state == .connected { self.autoStartAttempts = 0 }
-            if state == .disconnected, previous == .connecting {
-                // Failed to connect: the server may have a new IP (home DDNS). No dialog, background.
-                self.client.send(.lookUpServers) { _ in }
-            }
+            if !self.switchingVPN { self.noteMacVPN(state) }
             self.runAutoVPN()
         }
         vpn.watch(serviceID: Self.isWireGuardID(selectedVPNID) ? nil : selectedVPNID)
@@ -203,7 +266,10 @@ final class AppModel: ObservableObject {
                 self?.runAutoVPN()
             }
         }
+        // macOS may move it by up to 2 s to wake the Mac together with other timers (saves power).
+        timer?.tolerance = 2
         refresh()
+        if notifyWhenBlocked { askForNotifications() }
     }
 
     // MARK: - Derived state for the UI
@@ -233,12 +299,23 @@ final class AppModel: ObservableObject {
     var wireGuardServices: [VPNService] {
         (status?.config.wireguard ?? []).map { t in
             VPNService(id: "wg:\(t.id.uuidString)", name: t.name, kind: "WireGuard", remoteAddress: t.endpoint,
-                       sendsAllTraffic: t.isFullTunnel, engine: .wireGuard, tunnelID: t.id)
+                       sendsAllTraffic: t.isFullTunnel, engine: .wireGuard, tunnelID: t.id,
+                       carries: t.isFullTunnel ? nil : t.allowedIPs)
         }
     }
 
     var vpnServices: [VPNService] { wireGuardServices + macVPNServices }
     var selectedVPN: VPNService? { vpnServices.first { $0.id == selectedVPNID } }
+    /// The VPN in use: the chosen one, or the backup that replaces it on this network.
+    var activeVPNID: String? { backupVPNID ?? selectedVPNID }
+    var activeVPN: VPNService? { vpnServices.first { $0.id == activeVPNID } }
+    /// The chosen VPN while a backup is used instead of it.
+    var replacedVPN: VPNService? { backupVPNID == nil ? nil : selectedVPN }
+    /// Other VPNs that may stand in for the chosen one: they must carry all traffic.
+    var backupCandidates: [VPNService] {
+        vpnServices.filter { $0.id != selectedVPNID && !$0.isPartial && !$0.isOtherApp && !$0.needsSendAllFix }
+    }
+    func problem(for v: VPNService?) -> VPNProblem? { v.flatMap { vpnProblems[$0.id] } }
 
     func tunnel(for service: VPNService?) -> WireGuardTunnel? {
         guard let id = service?.tunnelID else { return nil }
@@ -247,19 +324,19 @@ final class AppModel: ObservableObject {
 
     /// The helper's tunnel, if it is the selected VPN.
     var wgRuntime: WireGuardRuntime? {
-        guard let id = selectedVPN?.tunnelID, let rt = status?.wg, rt.tunnelID == id else { return nil }
+        guard let id = activeVPN?.tunnelID, let rt = status?.wg, rt.tunnelID == id else { return nil }
         return rt
     }
 
     var vpnState: VPNState {
-        guard let v = selectedVPN else { return selectedVPNID == nil ? .none : .invalid }
+        guard let v = activeVPN else { return activeVPNID == nil ? .none : .invalid }
         guard v.engine == .wireGuard else { return macVPNState }
         guard status?.config.wgActive == v.tunnelID else { return .disconnected }
         return wgRuntime?.isConnected() == true ? .connected : .connecting
     }
 
     var vpnConnectedSince: Date? {
-        guard selectedVPN?.engine == .wireGuard else { return macConnectedSince }
+        guard activeVPN?.engine == .wireGuard else { return macConnectedSince }
         return vpnState == .connected ? wgRuntime?.startedAt : nil
     }
     var untrustedLinks: [NetworkLink] { status?.links.filter { $0.trustedName == nil } ?? [] }
@@ -328,7 +405,7 @@ final class AppModel: ObservableObject {
             return StateLook(glyph: .bang, tone: .red, title: "Firewall problem",
                              subtitle: "The firewall rules could not be set. Reinstall the helper.", primary: .reinstallHelper)
         }
-        let vpnName = selectedVPN?.name ?? "your VPN"
+        let vpnName = activeVPN?.name ?? "your VPN"
         switch s.reason {
         case .disabled:
             return StateLook(glyph: .dashed, tone: .gray, title: "Protection is off",
@@ -361,21 +438,87 @@ final class AppModel: ObservableObject {
     }
 
     private func untrustedLook(vpnName: String, protected: String) -> StateLook {
-        if selectedVPN == nil {
+        if activeVPN == nil {
             return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
                              subtitle: "Choose the VPN to use on networks you don't trust.", primary: .chooseVPN)
         }
         switch vpnState {
         case .connected:
+            if let v = activeVPN, v.isPartial {
+                // Connected, but it only carries some addresses: everything else is blocked here.
+                let who = partialNetworkName(v).map { "\($0) addresses" } ?? "some addresses"
+                return StateLook(glyph: .lock, tone: .orange, title: partialLabel(v),
+                                 subtitle: "\(v.name) only carries \(who). Other websites are blocked on this network.",
+                                 primary: fullVPNAlternative.map { .switchVPN(id: $0.id, name: $0.name) })
+            }
+            if let main = replacedVPN {
+                return StateLook(glyph: .lock, tone: .green, title: "Protected",
+                                 subtitle: "\(main.name) could not connect, so your backup \(vpnName) is used. All traffic goes through it.")
+            }
             return StateLook(glyph: .lock, tone: .green, title: "Protected", subtitle: protected)
         case .connecting:
+            if let main = replacedVPN {
+                return StateLook(glyph: .dots, tone: .orange, title: "Connecting…",
+                                 subtitle: "\(main.name) could not connect. Starting your backup \(vpnName).",
+                                 primary: .connecting, pulsing: true)
+            }
             return StateLook(glyph: .dots, tone: .orange, title: "Connecting…",
                              subtitle: "Starting \(vpnName). The internet opens as soon as it is up.",
                              primary: .connecting, pulsing: true)
         default:
+            if let p = problem(for: activeVPN) {
+                // Say why, in plain words (design: canvas "Popover · blocked, with the reason").
+                return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
+                                 subtitle: p.failure.sentence(vpn: vpnName), primary: .tryAgain)
+            }
             return StateLook(glyph: .cross, tone: .orange, title: "Blocked",
                              subtitle: "The VPN is off, so nothing on this Mac can reach the internet here.", primary: .connectVPN)
         }
+    }
+
+    // MARK: VPNs that only carry some addresses
+
+    private func partialNetworkName(_ v: VPNService) -> String? {
+        status?.config.trustedNetworkName(carriedBy: v.carries ?? [])
+    }
+
+    /// "Office network only" when it carries a trusted network, else "Some addresses only".
+    func partialLabel(_ v: VPNService) -> String {
+        partialNetworkName(v).map { "\($0) network only" } ?? "Some addresses only"
+    }
+
+    /// Rename a VPN: WireGuard in VPN Guard, L2TP / PPTP / Cisco IPSec in macOS too.
+    func renameVPN(_ v: VPNService) {
+        guard v.canRename else { return }
+        let note = v.engine == .wireGuard ? "" : " The new name is also used in System Settings → VPN."
+        guard let raw = Dialogs.askName(title: "Rename VPN", message: "\(v.name) · \(v.typeLabel).\(note)",
+                                        button: "Rename", initial: v.name, placeholder: "Office VPN"),
+              let name = DisplayName.clean(raw), name != v.name else { return }
+        if v.engine == .wireGuard, let id = v.tunnelID {
+            perform(.wgRename(id: id, name: name))
+        } else {
+            perform(.renameMacVPN(serviceID: v.id, name: name)) { [weak self] in self?.reloadVPNServices() }
+        }
+    }
+
+    /// A VPN that carries all traffic, to offer instead of a partial one.
+    var fullVPNAlternative: VPNService? {
+        vpnServices.first { $0.id != selectedVPNID && !$0.isPartial && !$0.isOtherApp && !$0.needsSendAllFix }
+    }
+
+    /// Choose the VPN used on untrusted networks. A partial one needs a yes first (Cancel is the default).
+    func choose(_ v: VPNService) {
+        guard v.id != selectedVPNID else { return }
+        if v.isPartial {
+            let who = partialNetworkName(v).map { "\($0) addresses" } ?? "some addresses"
+            let ranges = (v.carries ?? []).joined(separator: ", ")
+            let answer = Dialogs.choose(
+                title: "Use “\(v.name)” on networks you don’t trust?",
+                message: "\(v.name) only carries \(who) (\(ranges)). While it is your VPN on an untrusted network, other websites will be blocked.\n\nFor full protection, choose a VPN that carries all traffic, or ask for a WireGuard file with AllowedIPs = 0.0.0.0/0.",
+                buttons: ["Cancel", "Use \(v.name)"], warning: true)
+            guard answer == 1 else { return }
+        }
+        selectedVPNID = v.id
     }
 
     var networkCards: [NetworkCardInfo] {
@@ -417,13 +560,19 @@ final class AppModel: ObservableObject {
 
     /// One line under the VPN name. `now` comes from a TimelineView, so the minutes tick.
     func vpnDetail(now: Date) -> String {
-        guard let vpn = selectedVPN else { return "Choose the VPN to use" }
+        guard let vpn = activeVPN else { return "Choose the VPN to use" }
         let server = vpn.remoteAddress ?? ""
         if vpn.engine == .wireGuard {
             let rt = wgRuntime
             switch vpnState {
             case .connected:
+                if vpn.isPartial, let ranges = vpn.carries, !ranges.isEmpty {
+                    return "Only \(ranges.joined(separator: ", "))"   // short: fits the 340 pt card
+                }
                 let since = vpnConnectedSince.map { Self.duration(now.timeIntervalSince($0)) } ?? "just now"
+                if let main = replacedVPN {
+                    return since == "just now" ? "Backup for \(main.name)" : "Backup for \(main.name) · \(since)"
+                }
                 let traffic = rt.map { "↓ \(Self.bytes($0.rxBytes)) ↑ \(Self.bytes($0.txBytes))" } ?? ""
                 return [since == "just now" ? "Connected just now" : since, traffic].filter { !$0.isEmpty }.joined(separator: " · ")
             case .connecting:
@@ -431,11 +580,15 @@ final class AppModel: ObservableObject {
                 if rt?.isRunning == true { return "Waiting for \(server) to answer…" }
                 return "Connecting to \(server)…"
             default:
-                return vpnNotNeeded ?? "WireGuard · Disconnected"
+                return vpnNotNeeded ?? problemDetail(now: now) ?? "WireGuard · Disconnected"
             }
         }
         switch vpnState {
         case .connected:
+            if let main = replacedVPN {
+                let d = vpnConnectedSince.map { Self.duration(now.timeIntervalSince($0)) } ?? "just now"
+                return d == "just now" ? "Backup for \(main.name)" : "Backup for \(main.name) · \(d)"
+            }
             // Several networks and the VPN runs through an untrusted one: say which (short: 340 pt card).
             if status?.reason == .mixed, let via = primaryLink, via.trustedName == nil {
                 return "Connected via \(via.label)"
@@ -449,9 +602,28 @@ final class AppModel: ObservableObject {
         case .disconnecting: return "Disconnecting…"
         case .invalid: return "Not found in System Settings"
         case .none, .disconnected:
-            return vpnNotNeeded ?? "Disconnected"
+            return vpnNotNeeded ?? problemDetail(now: now) ?? "Disconnected"
         }
     }
+
+    /// "Login refused · next try in 30 s" for the VPN card, when the last try failed.
+    private func problemDetail(now: Date) -> String? {
+        guard let p = problem(for: activeVPN) else { return nil }
+        let label = p.failure.label
+        guard let next = nextTry, label.count <= 22 else { return label }   // must fit the 340 pt card
+        let seconds = Int(next.timeIntervalSince(now).rounded(.up))
+        return seconds > 0 ? "\(label) · next try in \(seconds) s" : "\(label) · trying again…"
+    }
+
+    /// When VPN Guard will start the VPN again by itself, if it will.
+    var nextTry: Date? {
+        guard autoConnect, !userStoppedVPN, vpnState == .disconnected, lastAutoStart != .distantPast,
+              status?.mode == .locked else { return nil }
+        return lastAutoStart.addingTimeInterval(Self.retryDelays[min(autoStartAttempts, Self.retryDelays.count - 1)])
+    }
+
+    /// The VPN card counts down to the next try: it needs a fresh text every second.
+    var showsRetryCountdown: Bool { problem(for: activeVPN) != nil && nextTry != nil }
 
     /// Why the VPN is not needed right now, or nil if it is.
     private var vpnNotNeeded: String? {
@@ -494,13 +666,17 @@ final class AppModel: ObservableObject {
     private func apply(_ result: Result<GuardStatus, Error>) {
         switch result {
         case .success(let s):
-            status = s
-            helperState = s.helperVersion == VG.version ? .ready : .outdated(s.helperVersion)
+            // Publish only what changed: this runs every 10 s, and each publish redraws every view
+            // (the closed popover too), which cost about 200 MB of graphics memory for a moment.
+            if status != s { status = s }
+            let state: HelperState = s.helperVersion == VG.version ? .ready : .outdated(s.helperVersion)
+            if helperState != state { helperState = state }
             syncVPNServers()
             runAutoVPN()
         case .failure(let error):
-            status = nil
-            helperState = Self.helperInstalledOnDisk ? .notResponding(error.localizedDescription) : .notInstalled
+            if status != nil { status = nil }
+            let state: HelperState = Self.helperInstalledOnDisk ? .notResponding(error.localizedDescription) : .notInstalled
+            if helperState != state { helperState = state }
         }
     }
 
@@ -533,6 +709,8 @@ final class AppModel: ObservableObject {
         case .resume: resume()
         case .turnOn: setProtection(true)
         case .installHelper, .reinstallHelper, .updateHelper: installHelper()
+        case .switchVPN(let id, _): selectedVPNID = id
+        case .tryAgain: retryVPN()
         }
     }
 
@@ -637,7 +815,8 @@ final class AppModel: ObservableObject {
         let wanted = ([chosen] + macVPNs.filter { $0.id != selectedVPNID }).compactMap { $0?.remoteAddress }
         let merged = ServerList.merge(current: s.config.vpnServers, previousAuto: autoServers, wanted: wanted)
         guard merged.list != s.config.vpnServers else {
-            UserDefaults.standard.set(merged.auto, forKey: Keys.autoServers)
+            // Runs every 10 s: write only when it changed.
+            if merged.auto != autoServers { UserDefaults.standard.set(merged.auto, forKey: Keys.autoServers) }
             return
         }
         let key = merged.list.joined(separator: ",")
@@ -662,8 +841,40 @@ final class AppModel: ObservableObject {
 
     func reloadVPNServices() {
         guard !isPreview else { return }
-        macVPNServices = VPNCatalog.services()
+        let services = VPNCatalog.services()
+        if services != macVPNServices { macVPNServices = services }
         syncVPNServers()
+    }
+
+    /// The network settings of macOS, watched so that a VPN added, removed or given another server in
+    /// System Settings is allowed through the lock at once (it waited for Settings or an app restart,
+    /// and while locked the VPN could not reach its new server).
+    private var networkSettings: SCPreferences?
+    private var networkSettingsReload: DispatchWorkItem?
+
+    private func watchNetworkSettings() {
+        guard !isPreview, let prefs = SCPreferencesCreate(nil, "VPNGuard-watch" as CFString, nil) else { return }
+        var ctx = SCPreferencesContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                       retain: nil, release: nil, copyDescription: nil)
+        let callback: SCPreferencesCallBack = { prefs, _, info in
+            SCPreferencesSynchronize(prefs)
+            guard let info else { return }
+            let me = Unmanaged<AppModel>.fromOpaque(info).takeUnretainedValue()
+            MainActor.assumeIsolated { me.networkSettingsChanged() }
+        }
+        guard SCPreferencesSetCallback(prefs, callback, &ctx), SCPreferencesSetDispatchQueue(prefs, .main) else {
+            NSLog("VPN Guard: could not watch the network settings")
+            return
+        }
+        networkSettings = prefs
+    }
+
+    /// System Settings saves in several steps: read once when it is quiet.
+    private func networkSettingsChanged() {
+        networkSettingsReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reloadVPNServices() }
+        networkSettingsReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
     /// True while the running VPN is one VPN Guard started by itself (kept across app restarts, because
@@ -677,13 +888,22 @@ final class AppModel: ObservableObject {
         guard !isPreview else { return }
         userStoppedVPN = false
         vpnStartedByUs = false
-        if selectedVPN?.engine == .wireGuard {
+        failedTries = 0
+        if activeVPN?.engine == .wireGuard {
             startSelectedVPN()
             return
         }
         if !vpn.start() {
-            Dialogs.error("VPN did not start", "macOS refused to start \"\(selectedVPN?.name ?? "the VPN")\". Try it once from System Settings → VPN so the password is saved.")
+            Dialogs.error("VPN did not start", "macOS refused to start \"\(activeVPN?.name ?? "the VPN")\". Try it once from System Settings → VPN so the password is saved.")
         }
+    }
+
+    /// "Try Again": start over with the chosen VPN (leaves a backup, forgets what failed here).
+    func retryVPN() {
+        guard !isPreview else { return }
+        failedHere = []
+        if backupVPNID != nil { switchActive(to: nil) }
+        connectVPN()
     }
 
     func disconnectVPN() {
@@ -693,8 +913,9 @@ final class AppModel: ObservableObject {
         stopSelectedVPN()
     }
 
+    /// Starts the VPN in use (the chosen one, or the backup).
     private func startSelectedVPN() {
-        if let v = selectedVPN, v.engine == .wireGuard, let id = v.tunnelID {
+        if let v = activeVPN, v.engine == .wireGuard, let id = v.tunnelID {
             perform(.wgConnect(id: id))
         } else {
             vpn.start()
@@ -702,11 +923,219 @@ final class AppModel: ObservableObject {
     }
 
     private func stopSelectedVPN() {
-        if selectedVPN?.engine == .wireGuard {
+        if activeVPN?.engine == .wireGuard {
             perform(.wgDisconnect)
         } else {
+            stoppingVPN = true
             vpn.stop()
         }
+    }
+
+    /// Takes a VPN down by its id, whatever the watcher points at. Asks macOS, not the watcher:
+    /// right after a switch its state can still be "disconnected" while the old VPN is connecting
+    /// (bug: it kept connecting after a fast switch).
+    private func stopVPN(id: String?, replacedBy new: String?) {
+        guard let id else { return }
+        if Self.isWireGuardID(id) {
+            // Going to another WireGuard VPN: "connect" swaps the tunnel, no separate "disconnect".
+            if status?.config.wgActive != nil, !Self.isWireGuardID(new) { perform(.wgDisconnect) }
+        } else {
+            VPNConnection.stopService(id)
+        }
+    }
+
+    // MARK: - Failed connections and backup VPNs
+
+    /// Use another VPN on this network (a backup), or nil to go back to the chosen one.
+    private func switchActive(to backup: String?) {
+        guard backup != backupVPNID else { return }
+        let old = activeVPNID
+        switchingVPN = true
+        stopVPN(id: old, replacedBy: backup ?? selectedVPNID)
+        backupVPNID = backup
+        attemptOpen = false
+        failedTries = 0
+        wgConnectingSince = nil
+        autoStartAttempts = 0
+        lastAutoStart = .distantPast
+        vpnConnectedOn = nil
+        // The watcher reports the new VPN's state at once, which runs the automatic VPN again.
+        vpn.watch(serviceID: Self.isWireGuardID(activeVPNID) ? nil : activeVPNID)
+        switchingVPN = false
+    }
+
+    private func forgetFailures() {
+        failedTries = 0
+        failedHere = []
+        attemptOpen = false
+        wgConnectingSince = nil
+    }
+
+    /// A macOS VPN changed state: note failed tries and read why.
+    private func noteMacVPN(_ state: VPNState) {
+        switch state {
+        case .connecting:
+            stoppingVPN = false
+            if !attemptOpen {
+                attemptOpen = true
+                attemptStarted = Date()
+            }
+        case .connected:
+            stoppingVPN = false
+            attemptOpen = false
+            autoStartAttempts = 0
+            vpnCameUp()
+        case .disconnected:
+            let stoppedByUs = stoppingVPN
+            stoppingVPN = false
+            guard attemptOpen else { return }
+            attemptOpen = false
+            // Failed to connect: the server may have a new IP (home DDNS). No dialog, background.
+            client.send(.lookUpServers) { _ in }
+            guard !stoppedByUs, !userStoppedVPN, let v = activeVPN, v.engine == .macOS else { return }
+            failedTries += 1
+            readFailure(of: v, since: attemptStarted)
+        default:
+            break
+        }
+    }
+
+    private func vpnCameUp() {
+        failedTries = 0
+        wgConnectingSince = nil
+        if let id = activeVPNID, vpnProblems[id] != nil { vpnProblems[id] = nil }
+    }
+
+    /// Why did macOS not connect this VPN? L2TP and PPTP write it to /var/log/ppp.log.
+    private func readFailure(of v: VPNService, since: Date) {
+        let id = v.id
+        let server = v.remoteAddress
+        let isPPP = AutoVPN.isPPP(kind: v.kind)
+        let fallback = (isPPP ? vpn.lastCause.flatMap(VPNFailure.from(pppLastCause:)) : nil) ?? .unknown
+        readingFailure = true
+        // A moment for macOS to finish writing the log.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.3) {
+            var failure = fallback
+            if isPPP, let text = Self.tail(ofFile: "/var/log/ppp.log", bytes: 64_000),
+               let found = PPPLog.lastFailure(in: text, server: server, since: since) {
+                failure = found
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.readingFailure = false
+                if !(self.activeVPNID == id && self.vpnState == .connected) {
+                    self.vpnProblems[id] = VPNProblem(failure: failure, at: Date())
+                }
+                self.runAutoVPN()
+            }
+        }
+    }
+
+    nonisolated private static func tail(ofFile path: String, bytes: UInt64) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        try? handle.seek(toOffset: size > bytes ? size - bytes : 0)
+        guard let data = try? handle.readToEnd() else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// WireGuard has no "failed" event: connecting for too long counts as failed.
+    private func noteWireGuard() {
+        guard let v = activeVPN, v.engine == .wireGuard else {
+            wgConnectingSince = nil
+            return
+        }
+        switch vpnState {
+        case .connected:
+            vpnCameUp()
+        case .connecting:
+            if wgConnectingSince == nil { wgConnectingSince = Date() }
+            if let since = wgConnectingSince, Date().timeIntervalSince(since) >= BackupVPN.wireGuardPatience,
+               failedTries < BackupVPN.triesBeforeBackup, !userStoppedVPN {
+                failedTries = BackupVPN.triesBeforeBackup
+                vpnProblems[v.id] = VPNProblem(failure: wgRuntime?.error.map(VPNFailure.message) ?? .wireGuardNoAnswer, at: Date())
+            }
+        default:
+            wgConnectingSince = nil
+        }
+    }
+
+    /// Three failed tries with the VPN in use: go to the next VPN that carries all traffic.
+    /// When every backup failed too, go back to the chosen VPN and keep trying it.
+    /// Returns true if it switched (the automatic VPN already ran again for the new one).
+    private func switchToBackupIfNeeded() -> Bool {
+        guard useBackupVPN, autoConnect, !userStoppedVPN, vpnState != .connected,
+              failedTries >= BackupVPN.triesBeforeBackup, let current = activeVPNID else { return false }
+        failedHere.insert(current)
+        if let next = BackupVPN.next(main: selectedVPNID, failed: failedHere, candidates: backupCandidates.map(\.id)) {
+            NSLog("VPN Guard: \(activeVPN?.name ?? current) failed \(failedTries) times, trying a backup VPN")
+            switchActive(to: next)
+            return true
+        }
+        if backupVPNID != nil {
+            NSLog("VPN Guard: every backup VPN failed, back to the chosen VPN")
+            switchActive(to: nil)
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Notifications
+
+    /// macOS shows its own question the first time (and again if it was closed without an answer).
+    func askForNotifications() {
+        guard !isPreview else { return }
+        notifier.authorize { [weak self] _ in self?.refreshNotificationPermission() }
+    }
+
+    func refreshNotificationPermission() {
+        guard !isPreview else { return }
+        notifier.access { [weak self] access in self?.notificationAccess = access }
+    }
+
+    static func openNotificationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Seconds the Mac has been awake since it started (stands still during sleep).
+    private static var awake: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Tell the user when the internet stays blocked, when a backup VPN is used, and when it is fine again.
+    private func updateNotices() {
+        guard !isPreview, helperReady, let s = status else { return }
+        let resolvingFor = resolvingSince.map { Self.awake - $0 } ?? 0
+        let wants = AutoVPN.wantsVPN(mode: s.mode, reason: s.reason, resolvingFor: resolvingFor,
+                                     primaryTrusted: primaryLink?.trustedName != nil)
+        let situation: Notices.Situation
+        if !wants || userStoppedVPN {
+            situation = .quiet
+        } else if vpnState == .connected {
+            situation = backupVPNID != nil ? .backup : .protected
+        } else {
+            situation = .blocked
+        }
+        if situation == .blocked {
+            if blockedSince == nil { blockedSince = Self.awake }
+        } else {
+            blockedSince = nil
+        }
+        if situation == .quiet {
+            lastNotice = nil
+            return
+        }
+        // Wait for the reason, so the notification can say it.
+        if situation == .blocked, readingFailure { return }
+        let blockedFor = blockedSince.map { Self.awake - $0 } ?? 0
+        guard let notice = Notices.decide(situation: situation, blockedFor: blockedFor, failedTries: failedTries,
+                                          lastSent: lastNotice) else { return }
+        lastNotice = notice
+        guard notifyWhenBlocked else { return }
+        let text = Notices.text(notice, vpn: activeVPN?.name, main: selectedVPN?.name,
+                                reason: problem(for: activeVPN)?.failure)
+        notifier.send(title: text.title, body: text.body)
     }
 
     // MARK: - WireGuard VPNs
@@ -723,7 +1152,10 @@ final class AppModel: ObservableObject {
                     self.apply(.success(s))
                     let added = s.config.wireguard.first { $0.id == tunnel.id }
                         ?? s.config.wireguard.first { $0.name.lowercased() == tunnel.name.trimmingCharacters(in: .whitespaces).lowercased() }
-                    if let added { self.selectedVPNID = "wg:\(added.id.uuidString)" }
+                    // A tunnel that only carries some addresses does not replace the chosen VPN by itself.
+                    if let added, added.isFullTunnel || self.selectedVPNID == nil {
+                        self.selectedVPNID = "wg:\(added.id.uuidString)"
+                    }
                     done(nil)
                 case .failure(let error):
                     done(error.localizedDescription)
@@ -817,7 +1249,17 @@ final class AppModel: ObservableObject {
     /// A PPP VPN whose network is gone -> restart it now (macOS would wait up to 80 s).
     /// Just arrived on a trusted network -> stop it once (you can start it again by hand).
     private func runAutoVPN() {
+        autoVPNStep()
+        updateNotices()
+    }
+
+    private func autoVPNStep() {
         guard !isPreview, helperReady, let s = status, selectedVPNID != nil else { return }
+        // The backup was removed meanwhile: back to the chosen VPN.
+        if let b = backupVPNID, !vpnServices.contains(where: { $0.id == b }) {
+            switchActive(to: nil)
+            return
+        }
         let key = s.links.map { "\($0.interface)=\($0.routerMAC ?? $0.routerIP)" }.joined(separator: ",")
         if key.isEmpty {
             if networkGoneSince == nil { networkGoneSince = Date() }
@@ -825,18 +1267,30 @@ final class AppModel: ObservableObject {
             // Your Connect / Disconnect choice belongs to a place: forget it only at a new one, not
             // after a Wi-Fi blip or a short sleep (bug: a blip at the office disconnected your VPN).
             let goneFor = networkGoneSince.map { Date().timeIntervalSince($0) }
-            if AutoVPN.isNewNetwork(key: key, lastKey: networkKey, goneFor: goneFor) {
+            let isNew = AutoVPN.isNewNetwork(key: key, lastKey: networkKey, goneFor: goneFor)
+            if isNew {
                 userStoppedVPN = false
                 autoDisconnectDoneFor = nil
+                // A new place: what failed elsewhere says nothing here, and the chosen VPN goes first again.
+                failedHere = []
+                vpnProblems = [:]
+                lastNotice = nil
+                blockedSince = nil
             }
             autoStartAttempts = 0
             lastAutoStart = .distantPast
+            failedTries = 0
+            wgConnectingSince = nil
             networkKey = key
             networkGoneSince = nil
+            if isNew, backupVPNID != nil {
+                switchActive(to: nil)
+                return
+            }
         }
         if s.reason == .resolving {
             if resolvingSince == nil {
-                resolvingSince = Date()
+                resolvingSince = Self.awake
                 DispatchQueue.main.asyncAfter(deadline: .now() + AutoVPN.resolvingGrace + 0.2) { [weak self] in
                     self?.runAutoVPN()
                 }
@@ -853,24 +1307,47 @@ final class AppModel: ObservableObject {
             vpnConnectedOn = nil
         }
 
-        let resolvingFor = resolvingSince.map { Date().timeIntervalSince($0) } ?? 0
-        if AutoVPN.wantsVPN(mode: s.mode, reason: s.reason, resolvingFor: resolvingFor,
-                            primaryTrusted: primaryLink?.trustedName != nil) {
-            if vpnState == .connected, let v = selectedVPN, v.engine == .macOS, AutoVPN.isPPP(kind: v.kind),
+        noteWireGuard()
+        let resolvingFor = resolvingSince.map { Self.awake - $0 } ?? 0
+        let wants = AutoVPN.wantsVPN(mode: s.mode, reason: s.reason, resolvingFor: resolvingFor,
+                                     primaryTrusted: primaryLink?.trustedName != nil)
+        // No VPN needed here any more and the backup is down: the chosen VPN is "the VPN" again.
+        if !wants, backupVPNID != nil, !vpnState.isUp {
+            switchActive(to: nil)
+            return
+        }
+        if wants {
+            if vpnState == .connected, let v = activeVPN, v.engine == .macOS, AutoVPN.isPPP(kind: v.kind),
                let on = vpnConnectedOn, AutoVPN.networkMovedAway(connectedOn: on, links: s.links) {
                 NSLog("VPN Guard: the network under \(v.name) is gone, restarting it")
                 vpnConnectedOn = nil
                 autoStartAttempts = 0
                 lastAutoStart = .distantPast
+                stoppingVPN = true
                 vpn.stop()   // the next state change starts it again on the new network
                 return
             }
+            if switchToBackupIfNeeded() { return }
             guard autoConnect, !userStoppedVPN, vpnState == .disconnected else { return }
-            let delays: [TimeInterval] = [0, 5, 15, 30, 60]
-            guard Date().timeIntervalSince(lastAutoStart) >= delays[min(autoStartAttempts, delays.count - 1)] else { return }
+            let delay = Self.retryDelays[min(autoStartAttempts, Self.retryDelays.count - 1)]
+            let wait = delay - Date().timeIntervalSince(lastAutoStart)
+            guard wait <= 0 else {
+                // Try again exactly when the wait is over (the 10 s timer alone would be late).
+                if !retryTimerSet {
+                    retryTimerSet = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + wait + 0.05) { [weak self] in
+                        self?.retryTimerSet = false
+                        self?.runAutoVPN()
+                    }
+                }
+                return
+            }
             lastAutoStart = Date()
             autoStartAttempts += 1
             vpnStartedByUs = true
+            // A VPN started here goes again when the network is trusted, also the same one as before
+            // (woken at home, the router not read yet: locked for a moment).
+            autoDisconnectDoneFor = nil
             startSelectedVPN()
         } else if AutoVPN.shouldStopOwnVPN(reason: s.reason) {
             // Protection off or paused: normal internet. Stop the VPN we started (bug: it stayed on).
@@ -889,7 +1366,7 @@ final class AppModel: ObservableObject {
     /// With two networks up, find the one the macOS VPN really uses (the route to its server), so a
     /// restart happens when exactly that one goes away.
     private func narrowVPNNetwork(status s: GuardStatus) {
-        guard let v = selectedVPN, v.engine == .macOS, AutoVPN.isPPP(kind: v.kind), s.links.count > 1,
+        guard let v = activeVPN, v.engine == .macOS, AutoVPN.isPPP(kind: v.kind), s.links.count > 1,
               let server = v.remoteAddress.map(GuardConfig.normalizeServer) else { return }
         guard let ip = Net.isIPv4(server) ? server : s.config.hostIPs[server]?.first, Net.isIPv4(ip) else { return }
         let fallback = vpnConnectedOn
@@ -941,11 +1418,18 @@ final class AppModel: ObservableObject {
 
     func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: Keys.onboardingDone)
+        // On by default: without the app nobody starts the VPN after a restart, and at a café there is
+        // then no internet at all. Settings can turn it off.
+        if !isPreview, SMAppService.mainApp.status != .enabled { launchAtLogin = true }
     }
 
+    /// Previews have no real login item.
+    var previewLaunchAtLogin = true
+
     var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
+        get { isPreview ? previewLaunchAtLogin : SMAppService.mainApp.status == .enabled }
         set {
+            guard !isPreview else { previewLaunchAtLogin = newValue; return }
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
@@ -958,13 +1442,17 @@ final class AppModel: ObservableObject {
     // MARK: - Previews (render the UI with made-up data, no helper)
 
     enum PreviewScenario: String, CaseIterable {
-        case protected, wireguard, trusted, connecting, blocked, paused, off, setup, mixed, mixedPhone, officeTwo
+        case protected, wireguard, trusted, connecting, blocked, paused, off, setup, mixed, mixedPhone, officeTwo, partial
+        /// The chosen VPN was refused; and the same with a backup VPN connected instead.
+        case failed, backup
     }
 
     init(preview: PreviewScenario) {
         isPreview = true
         autoConnect = true
         autoDisconnect = true
+        useBackupVPN = preview == .backup
+        notifyWhenBlocked = true
         macVPNServices = [
             VPNService(id: "preview", name: "Office VPN", kind: "L2TP", remoteAddress: "vpn.example.com", sendsAllTraffic: true),
             VPNService(id: "preview-2", name: "Branch Office", kind: "L2TP", remoteAddress: "203.0.113.10",
@@ -1015,6 +1503,20 @@ final class AppModel: ObservableObject {
             macVPNState = .disconnected
         case .mixed:
             reason = .mixed; links = [officeLink, iPhoneUSB]; primary = "en0"; macVPNState = .disconnected
+        case .partial:
+            macVPNState = .disconnected
+        case .failed:
+            macVPNState = .disconnected
+            vpnProblems["preview"] = VPNProblem(failure: .loginRefused(code: 691), at: Date(timeIntervalSinceNow: -40))
+            lastAutoStart = Date(timeIntervalSinceNow: -0.5)
+            autoStartAttempts = 3
+        case .backup:
+            macVPNServices.append(VPNService(id: "preview-3", name: "Home VPN", kind: "L2TP", remoteAddress: "home.example.net",
+                                             sendsAllTraffic: true))
+            backupVPNID = "preview-3"
+            vpnProblems["preview"] = VPNProblem(failure: .loginRefused(code: 691), at: Date(timeIntervalSinceNow: -150))
+            macVPNState = .connected
+            macConnectedSince = Date(timeIntervalSinceNow: -2 * 60)
         case .officeTwo:
             mode = .open; reason = .trusted; links = [officeLink, officeLAN]; primary = "en7"; macVPNState = .disconnected
         case .mixedPhone:
@@ -1023,6 +1525,17 @@ final class AppModel: ObservableObject {
             macConnectedSince = Date(timeIntervalSinceNow: -3 * 60)
         }
         var wgRuntime: WireGuardRuntime?
+        if preview == .partial {
+            let officeWG = WireGuardTunnel(name: "Office tunnel", publicKey: "Wq7sZ9cH1pYk3QeV0aTn5RbX8uLm2DjF6gKw4yNo0Es=",
+                                           addresses: ["192.168.88.222/32"], dns: ["1.1.1.1"],
+                                           peerPublicKey: "kP5mW2xQ8rT1vY6nB3cJ9hL4fD7sA0gE5uI2oK8zXqM=",
+                                           endpoint: "vpn.example.com:51820", allowedIPs: ["192.168.88.0/24"])
+            config.wireguard = [officeWG]
+            config.wgActive = officeWG.id
+            selectedVPNID = "wg:\(officeWG.id.uuidString)"
+            wgRuntime = WireGuardRuntime(tunnelID: officeWG.id, interface: "utun9", startedAt: Date(timeIntervalSinceNow: -3 * 60),
+                                         lastHandshake: Date(timeIntervalSinceNow: -5), rxBytes: 92, txBytes: 180)
+        }
         if preview == .wireguard {
             let home = WireGuardTunnel(name: "Home", publicKey: "Wq7sZ9cH1pYk3QeV0aTn5RbX8uLm2DjF6gKw4yNo0Es=",
                                        addresses: ["10.8.0.2/32"], dns: ["1.1.1.1"],

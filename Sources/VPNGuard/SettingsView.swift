@@ -4,10 +4,29 @@ import VPNGuardCore
 /// Settings window: title bar with icon tabs on top (design canvas, "menu on top"), page below.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    /// Measured: the tab bar and the page's own height (both do not depend on the window size).
+    @State private var barHeight: CGFloat = 0
+    @State private var pageHeight: CGFloat = 0
+
+    /// The window is as tall as the page, so there is no scroll bar, unless the screen is too small.
+    private var height: CGFloat {
+        guard barHeight > 0, pageHeight > 0 else { return 640 }
+        let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 40
+        return max(320, min(barHeight + pageHeight, screen)) - titleBarHeight
+    }
+
+    /// The hidden title bar the tab bar sits under. A fixed number: measuring it from the layout fed back
+    /// into the window height and froze the app (1.2.3 development).
+    private var titleBarHeight: CGFloat {
+        guard !model.isPreview else { return 0 }   // previews have no title bar
+        let content = NSRect(x: 0, y: 0, width: 100, height: 100)
+        return NSWindow.frameRect(forContentRect: content, styleMask: [.titled]).height - content.height
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             SettingsTopBar()
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { barHeight = $0 }
             ScrollView {
                 Group {
                     switch model.settingsPane {
@@ -20,12 +39,14 @@ struct SettingsView: View {
                 .padding(.horizontal, 28)
                 .padding(.top, 20)
                 .padding(.bottom, 24)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
         }
-        .frame(width: 700, height: 640)
         .background(Palette.window)
+        // The tab bar goes up under the (hidden) title bar; the frame below is the part under it.
         .ignoresSafeArea(edges: .top)
+        .frame(width: 700, height: height)
         .onAppear {
             model.reloadVPNServices()
             model.refresh()
@@ -153,6 +174,7 @@ private struct HelperNeededCard: View {
 
 private struct GeneralPage: View {
     @EnvironmentObject private var model: AppModel
+    @State private var testing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -168,10 +190,64 @@ private struct GeneralPage: View {
                     ToggleRow(title: "Open VPN Guard at login",
                               isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 }))
                 }
-                Text("The firewall keeps working even when the app is closed.")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 4).padding(.top, 8)
+                if model.launchAtLogin {
+                    Text("The firewall keeps working even when the app is closed.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 4).padding(.top, 8)
+                } else {
+                    Label("After a restart your VPN does not start until you open VPN Guard. The firewall still blocks, so outside trusted networks there is no internet.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12)).foregroundStyle(Tone.orange.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4).padding(.top, 8)
+                }
             }
+
+            VStack(alignment: .leading, spacing: 0) {
+                SectionHeading(title: "Alerts and test")
+                SettingsCard {
+                    ToggleRow(title: "Notify me when the internet is blocked",
+                              detail: "Also when a backup VPN is used, and when you are protected again.",
+                              isOn: $model.notifyWhenBlocked)
+                    if model.notifyWhenBlocked && model.notificationAccess != .allowed {
+                        let refused = model.notificationAccess == .refused
+                        RowDivider()
+                        HStack(spacing: 12) {
+                            Text(refused ? "Notifications are turned off for VPN Guard in System Settings."
+                                         : "macOS has not allowed VPN Guard to show notifications yet.")
+                                .font(.system(size: 12)).foregroundStyle(Tone.orange.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer()
+                            if refused {
+                                Button("Open Notification Settings") { AppModel.openNotificationSettings() }
+                                    .buttonStyle(CardButtonStyle())
+                            } else {
+                                Button("Allow…") { model.askForNotifications() }
+                                    .buttonStyle(CardButtonStyle())
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 44)
+                    }
+                    RowDivider()
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Protection test").font(.system(size: 13))
+                            Text("Check that nothing gets out outside your VPN.")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Test Now…") { testing = true }
+                            .buttonStyle(CardButtonStyle())
+                            .disabled(!model.helperReady)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 44)
+                    .padding(.vertical, 6)
+                }
+            }
+            .sheet(isPresented: $testing) { ProtectionTestSheet().environmentObject(model) }
+            .onAppear { model.refreshNotificationPermission() }
 
             VStack(alignment: .leading, spacing: 0) {
                 SectionHeading(title: "Menu bar icon", trailing: "Choose how the shield looks")
@@ -545,7 +621,8 @@ private struct VPNPage: View {
                             remove: removableSelection.map { v in { model.removeWireGuard(v) } },
                             addHelp: "Add a VPN",
                             removeHelp: "Remove the chosen WireGuard VPN (remove macOS VPNs in System Settings)",
-                            caption: "WireGuard is built in · L2TP and IKEv2 use macOS")
+                            caption: model.vpnServices.first(where: \.isPartial).map { "“\(model.partialLabel($0))”: other websites stay blocked while it is the VPN" }
+                                ?? "WireGuard is built in · L2TP and IKEv2 use macOS")
                 }
             }
 
@@ -553,6 +630,10 @@ private struct VPNPage: View {
                 SectionHeading(title: "Automatic")
                 SettingsCard {
                     ToggleRow(title: "Connect by itself on untrusted networks", isOn: $model.autoConnect)
+                    RowDivider()
+                    ToggleRow(title: "Use my other VPNs as a backup",
+                              detail: "If the ✓ VPN fails 3 times, try the next VPN that carries all traffic.",
+                              isOn: $model.useBackupVPN)
                     RowDivider()
                     ToggleRow(title: "Disconnect when I join a trusted network", isOn: $model.autoDisconnect)
                 }
@@ -591,11 +672,13 @@ private struct VPNPage: View {
     }
 
     @ViewBuilder private var currentCard: some View {
-        if let v = model.selectedVPN {
+        // The VPN in use: the chosen one, or the backup that replaces it on this network.
+        if let v = model.activeVPN {
             let state = model.vpnState
-            let tone: Tone = state == .connected ? .green : (state == .connecting ? .orange : .gray)
-            let glyph: GlyphKind = state == .connected ? .lock : (state == .connecting ? .dots : .empty)
-            let stateText = state == .connected ? "Connected" : state.text
+            let failed = !state.isUp && model.problem(for: v) != nil
+            let tone: Tone = state == .connected ? .green : (state == .connecting ? .orange : (failed ? .red : .gray))
+            let glyph: GlyphKind = state == .connected ? .lock : (state == .connecting ? .dots : (failed ? .cross : .empty))
+            let stateText = state == .connected ? "Connected" : (failed ? "Could not connect" : state.text)
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 HeaderCard(title: v.name,
                            detail: Text(stateText).foregroundColor(tone == .gray ? nil : tone.text).fontWeight(.medium)
@@ -604,6 +687,8 @@ private struct VPNPage: View {
                 } trailing: {
                     if state.isUp {
                         Button("Disconnect") { model.disconnectVPN() }
+                    } else if failed {
+                        Button("Try Again") { model.retryVPN() }.buttonStyle(.borderedProminent)
                     } else {
                         Button("Connect") { model.connectVPN() }.buttonStyle(.borderedProminent)
                     }
@@ -618,6 +703,7 @@ private struct VPNPage: View {
 
     private func currentDetail(_ v: VPNService, now: Date) -> String {
         var parts: [String] = []
+        if !model.vpnState.isUp, let p = model.problem(for: v) { parts.append(p.failure.label) }
         if model.vpnState == .connected, let since = model.vpnConnectedSince {
             let d = AppModel.duration(now.timeIntervalSince(since))
             if d != "just now" { parts.append(d) }
@@ -626,12 +712,19 @@ private struct VPNPage: View {
             parts.append("↓ \(AppModel.bytes(rt.rxBytes)) ↑ \(AppModel.bytes(rt.txBytes))")
         }
         parts.append(v.typeLabel)
-        if let server = v.remoteAddress, !server.isEmpty { parts.append(server) }
+        if let main = model.replacedVPN {
+            parts.append("backup for \(main.name)")
+        } else if let server = v.remoteAddress, !server.isEmpty {
+            parts.append(server)
+        }
         return " · " + parts.joined(separator: " · ")
     }
 
     private func vpnRow(_ v: VPNService) -> some View {
         let chosen = model.selectedVPNID == v.id
+        // In use here: the chosen VPN, or a backup standing in for it.
+        let inUse = model.activeVPNID == v.id
+        let backup = model.backupVPNID == v.id
         return HStack(spacing: 10) {
             Image(systemName: "checkmark")
                 .font(.system(size: 12, weight: .bold))
@@ -651,14 +744,19 @@ private struct VPNPage: View {
             }
             .frame(width: 20)
             Text(v.name).font(.system(size: 13, weight: chosen ? .semibold : .medium)).lineLimit(1)
-            Text(v.typeLabel).font(.system(size: 12)).foregroundStyle(.secondary)
+            Text(v.isPartial ? "\(v.typeLabel) · \((v.carries ?? []).joined(separator: ", "))" : v.typeLabel)
+                .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 8)
-            if chosen && model.vpnState == .connected {
-                DotStatus(text: "Connected", tone: .green)
-            } else if chosen && model.vpnState == .connecting {
-                DotStatus(text: "Connecting…", tone: .orange)
+            if inUse && model.vpnState == .connected {
+                DotStatus(text: backup ? "Connected · backup" : "Connected", tone: .green)
+            } else if inUse && model.vpnState == .connecting {
+                DotStatus(text: backup ? "Connecting… · backup" : "Connecting…", tone: .orange)
+            } else if let p = model.problem(for: v) {
+                Pill(text: p.failure.label, tone: .red)
             } else if v.needsSendAllFix {
                 Pill(text: "Needs a fix", tone: .orange)
+            } else if v.isPartial {
+                Pill(text: model.partialLabel(v), tone: .orange)
             }
             InfoButton(label: "Details for \(v.name)") { details = v }
         }
@@ -666,7 +764,12 @@ private struct VPNPage: View {
         .padding(.trailing, 10)
         .frame(height: 44)
         .contentShape(Rectangle())
-        .onTapGesture { model.selectedVPNID = v.id }
+        .onTapGesture { model.choose(v) }
+        .contextMenu {
+            if v.canRename { Button("Rename…") { model.renameVPN(v) } }
+            Button("Details…") { details = v }
+            if v.engine == .wireGuard { Button("Remove…", role: .destructive) { model.removeWireGuard(v) } }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
     }

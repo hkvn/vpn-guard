@@ -48,6 +48,9 @@ VPN Guard fixes this with one rule:
 - **Works with the VPNs in macOS** (L2TP over IPSec, IKEv2, and others). VPN Guard can also create them
   for you, with "Send all traffic" always on.
 - **Auto VPN.** Connects your VPN on untrusted networks and disconnects it when you get home.
+- **Says why the VPN failed**, in plain words ("the server refused the login"), can fall back to a
+  **backup VPN**, and sends a notification when you stay blocked.
+- **Protection test.** One button checks that nothing gets out outside your VPN.
 - **VPN server by host name** works even while DNS is blocked: VPN Guard answers just that one name
   on your Mac.
 - **Pause** for a few minutes (café login pages), with a countdown.

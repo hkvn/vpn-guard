@@ -1,5 +1,6 @@
 import Foundation
 import SystemConfiguration
+import IOKit.pwr_mgt
 import notify
 import VPNGuardCore
 
@@ -38,6 +39,11 @@ final class Engine {
     /// NAT64 prefixes of the current networks (phone hotspots on IPv6 carriers).
     private var currentNAT64: [String] = []
     private var lastNetworksKey = ""
+    /// Sleep and wake: locked before sleep, routers read again after the wake.
+    private var wake = WakeGuard()
+    private var powerConnection: io_connect_t = 0
+    private var powerPort: IONotificationPortRef?
+    private var powerNotifier: io_object_t = 0
     private(set) var status: GuardStatus
     private var hasPublished = false
 
@@ -73,6 +79,7 @@ final class Engine {
                 firewall.reloadMainRuleset()
             }
             watchNetwork()
+            watchSleep()
             wg.cleanUp(store: dynamicStore)
             wg.onExit = { [weak self] in
                 guard let self else { return }
@@ -116,6 +123,54 @@ final class Engine {
         dynamicStore = store
     }
 
+    // MARK: - Sleep and wake
+
+    /// IOKit power messages (IOMessage.h; the C macros do not reach Swift).
+    private enum PowerMessage {
+        static let canSystemSleep: UInt32 = 0xE000_0270
+        static let systemWillSleep: UInt32 = 0xE000_0280
+        static let systemWillNotSleep: UInt32 = 0xE000_0290
+        static let systemHasPoweredOn: UInt32 = 0xE000_0300
+    }
+
+    private func watchSleep() {
+        let callback: IOServiceInterestCallback = { refcon, _, message, argument in
+            guard let refcon else { return }
+            Unmanaged<Engine>.fromOpaque(refcon).takeUnretainedValue().power(message, argument)
+        }
+        powerConnection = IORegisterForSystemPower(Unmanaged.passUnretained(self).toOpaque(), &powerPort,
+                                                   callback, &powerNotifier)
+        guard powerConnection != 0, let powerPort else {
+            Log.error("Could not watch sleep and wake; the lock is checked after wake by network events only")
+            return
+        }
+        IONotificationPortSetDispatchQueue(powerPort, queue)
+    }
+
+    /// Runs on `queue`. The Mac waits for the answer to "will sleep" (up to 30 s), so the lock is in
+    /// place before it sleeps.
+    private func power(_ message: UInt32, _ argument: UnsafeMutableRawPointer?) {
+        switch message {
+        case PowerMessage.canSystemSleep:
+            IOAllowPowerChange(powerConnection, Int(bitPattern: argument))
+        case PowerMessage.systemWillSleep:
+            wake.willSleep()
+            evaluate("sleep")
+            IOAllowPowerChange(powerConnection, Int(bitPattern: argument))
+        case PowerMessage.systemWillNotSleep:
+            wake.sleepCancelled()
+            evaluate("sleep cancelled")
+        case PowerMessage.systemHasPoweredOn:
+            wake.didWake(at: Date())
+            // Entries from before the sleep may be another place's routers: only answers from now count.
+            Shell.run("/usr/sbin/arp", ["-d", "-a"])
+            lookupAttempts = [:]
+            evaluate("wake")
+        default:
+            break
+        }
+    }
+
     private func startSafetyTimer() {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(wallDeadline: .now() + Self.safetyInterval, repeating: Self.safetyInterval, leeway: .seconds(2))
@@ -153,16 +208,31 @@ final class Engine {
         }
 
         var links = NetworkProbe.links(store: dynamicStore)
-        for i in links.indices where links[i].routerMAC == nil {
-            links[i].routerMAC = ARPTable.lookup(ip: links[i].routerIP, interface: links[i].interface)
+        // Asleep or just woken: macOS may still show the router of the place where the Mac went to
+        // sleep. A router counts only once the emptied ARP table has an answer from it again.
+        var unconfirmedRouters = Set<String>()
+        if wake.checking {
+            for i in links.indices {
+                let fresh = wake.asleep ? nil : ARPTable.lookup(ip: links[i].routerIP, interface: links[i].interface)
+                if let fresh { links[i].routerMAC = fresh } else { unconfirmedRouters.insert(links[i].routerIP) }
+            }
+            if wake.update(routersFresh: !links.isEmpty && unconfirmedRouters.isEmpty, now: now) {
+                Log.info("Routers read again after wake")
+                unconfirmedRouters = []
+            }
+        } else {
+            for i in links.indices where links[i].routerMAC == nil {
+                links[i].routerMAC = ARPTable.lookup(ip: links[i].routerIP, interface: links[i].interface)
+            }
         }
+        let routersUnconfirmed = wake.checking
         for i in links.indices {
             links[i].trustedName = config.trustedNetwork(matchingMAC: links[i].routerMAC)?.name
         }
 
         // A pause belongs to the place where it started (a hotel login page). It must not follow you
         // to the next network (bug: you stayed unprotected at the next cafe until the timer ran out).
-        if config.isPaused(at: now), !links.isEmpty {
+        if config.isPaused(at: now), !links.isEmpty, !routersUnconfirmed {
             if let on = config.pausedOn {
                 if !on.covers(links) {
                     config.pausedUntil = nil
@@ -182,18 +252,18 @@ final class Engine {
         let networksKey = links.map { "\($0.interface)|\($0.routerIP)|\($0.routerMAC ?? "")" }.sorted().joined(separator: ",")
         let networksChanged = networksKey != lastNetworksKey
         lastNetworksKey = networksKey
-        let decision = Policy.decide(config: config, links: links, now: now)
+        let decision = Policy.decide(config: config, links: links, now: now, routersUnconfirmed: routersUnconfirmed)
         currentReason = decision.reason
         let modeBefore = appliedMode
         apply(decision.mode, links: links)
         // Locked or unlocked, or a new network: check the VPN server names at once.
-        if (modeBefore != nil && appliedMode != modeBefore) || (networksChanged && !links.isEmpty) {
+        if !wake.asleep, (modeBefore != nil && appliedMode != modeBefore) || (networksChanged && !links.isEmpty) {
             refreshHosts(force: true)
         }
         // After apply(): the firewall already lets the WireGuard server through.
         ensureWireGuard(links: links)
         // After apply(): in lock mode the ping to the router is only allowed once the rules include it.
-        lookUpMissingRouters(links)
+        if !wake.asleep { lookUpMissingRouters(links, alsoAsk: unconfirmedRouters) }
         schedulePauseEnd()
         publish(decision, links: links, why: why)
     }
@@ -254,8 +324,9 @@ final class Engine {
         }
     }
 
-    private func lookUpMissingRouters(_ links: [NetworkLink]) {
-        let missing = links.filter { $0.routerMAC == nil }
+    /// `alsoAsk`: routers whose hardware address is known but must be read again (after a wake).
+    private func lookUpMissingRouters(_ links: [NetworkLink], alsoAsk: Set<String> = []) {
+        let missing = links.filter { $0.routerMAC == nil || alsoAsk.contains($0.routerIP) }
         let current = Set(missing.map(\.routerIP))
         lookupAttempts = lookupAttempts.filter { current.contains($0.key) }
 
@@ -264,7 +335,9 @@ final class Engine {
         for link in missing where !lookupsRunning.contains(link.routerIP) {
             let ip = link.routerIP, ifname = link.interface
             let attempt = lookupAttempts[ip] ?? (0, .distantPast)
-            let wait = min(30, pow(2, Double(attempt.count)) - 1) // 0, 1, 3, 7, 15, 30 s
+            // 0, 1, 3, 7, 15, 30 s. Just after a wake every second: Wi-Fi comes back within seconds,
+            // and until the router answers the Mac stays locked.
+            let wait = wake.wokeAt != nil ? min(1, Double(attempt.count)) : min(30, pow(2, Double(attempt.count)) - 1)
             let remaining = wait - now.timeIntervalSince(attempt.last)
             if remaining > 0 {
                 nextRetry = min(nextRetry ?? remaining, remaining)
@@ -356,6 +429,13 @@ final class Engine {
         }
         guard gateway != nil else { return } // no network yet: try again when one shows up
         guard Date() >= wgRetryAt else { return }
+        // A tunnel added before a check existed (e.g. address 0.0.0.0 from a half-made file): say why in
+        // plain words instead of retrying an ifconfig error forever.
+        if let problem = tunnel.problems().first {
+            if wgError != problem { Log.error("WireGuard \(tunnel.name): \(problem)") }
+            wgError = problem
+            return
+        }
         guard let endpointIP else {
             wgError = "Looking up \(tunnel.endpointHost)…"
             refreshHosts(force: true)
@@ -639,6 +719,24 @@ final class Engine {
             syncPinnedNames()
             evaluate("wireguard removed")
 
+        case .wgRename(let id, let rawName):
+            guard let name = DisplayName.clean(rawName) else { throw CommandError(message: "Type a name for the VPN.") }
+            guard let i = config.wireguard.firstIndex(where: { $0.id == id }) else {
+                throw CommandError(message: "That WireGuard VPN does not exist any more.")
+            }
+            guard !config.wireguard.contains(where: { $0.id != id && $0.name.lowercased() == name.lowercased() }) else {
+                throw CommandError(message: "A WireGuard VPN named \"\(name)\" already exists.")
+            }
+            let old = config.wireguard[i].name
+            guard old != name else { break }
+            config.wireguard[i].name = name
+            Log.info("Renamed WireGuard VPN \(old) to \(name)")
+            persist()
+
+        case .renameMacVPN(let serviceID, let rawName):
+            guard let name = DisplayName.clean(rawName) else { throw CommandError(message: "Type a name for the VPN.") }
+            try Self.renameMacVPN(serviceID: serviceID, to: name)
+
         case .wgConnect(let id):
             guard let t = config.wireguard.first(where: { $0.id == id }) else {
                 throw CommandError(message: "That WireGuard VPN does not exist any more.")
@@ -661,8 +759,39 @@ final class Engine {
     }
 
     private static func cleanName(_ raw: String, fallback: String = "Trusted network") -> String {
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .filter { !$0.isNewline && $0.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) } }
-        return s.isEmpty ? fallback : String(s.prefix(64))
+        DisplayName.clean(raw) ?? fallback
+    }
+
+    /// Renames an L2TP, PPTP or Cisco IPSec VPN in the macOS network settings. VPNs that macOS keeps
+    /// elsewhere (IKEv2) or that belong to another app are refused.
+    private static func renameMacVPN(serviceID: String, to name: String) throws {
+        guard Net.isServiceID(serviceID) else { throw CommandError(message: "That is not a VPN in macOS.") }
+        guard let prefs = SCPreferencesCreate(nil, "VPNGuard" as CFString, nil) else {
+            throw CommandError(message: "Could not open the macOS network settings.")
+        }
+        guard SCPreferencesLock(prefs, true) else {
+            throw CommandError(message: "The macOS network settings are busy. Close System Settings and try again.")
+        }
+        defer { SCPreferencesUnlock(prefs) }
+        guard let service = SCNetworkServiceCopy(prefs, serviceID as CFString),
+              let iface = SCNetworkServiceGetInterface(service),
+              let type = SCNetworkInterfaceGetInterfaceType(iface) as String?
+        else { throw CommandError(message: "That VPN is not in macOS any more.") }
+        var renamable = type == kSCNetworkInterfaceTypeIPSec as String
+        if type == kSCNetworkInterfaceTypePPP as String, let inner = SCNetworkInterfaceGetInterface(iface),
+           let innerType = SCNetworkInterfaceGetInterfaceType(inner) as String? {
+            renamable = innerType == kSCNetworkInterfaceTypeL2TP as String || innerType == "PPTP"
+        }
+        guard renamable else { throw CommandError(message: "VPN Guard can only rename L2TP, PPTP and Cisco IPSec VPNs. Rename this one in System Settings → VPN.") }
+        let old = (SCNetworkServiceGetName(service) as String?) ?? serviceID
+        guard old != name else { return }
+        guard SCNetworkServiceSetName(service, name as CFString) else {
+            throw CommandError(message: SCError() == kSCStatusKeyExists
+                ? "Another network service is already called \"\(name)\"." : "macOS did not accept the name \"\(name)\".")
+        }
+        guard SCPreferencesCommitChanges(prefs), SCPreferencesApplyChanges(prefs) else {
+            throw CommandError(message: "macOS could not save the new name.")
+        }
+        Log.info("Renamed macOS VPN \(old) to \(name)")
     }
 }

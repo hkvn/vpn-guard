@@ -19,9 +19,25 @@ struct VPNService: Identifiable, Hashable {
     var engine: VPNEngine = .macOS
     var account: String? = nil
     var tunnelID: UUID? = nil
+    /// WireGuard: the address ranges it carries when it does not carry everything.
+    var carries: [String]? = nil
+    /// macOS "VPN" services: who provides it, e.g. io.tailscale.ipn.macsys (another app) or com.apple.… .
+    var subType: String? = nil
 
-    /// Third-party VPN apps (Tailscale and others) show up as "VPN".
-    var isOtherApp: Bool { engine == .macOS && kind == "VPN" && remoteAddress == nil }
+    /// Only some addresses go through it (WireGuard AllowedIPs without 0.0.0.0/0). Outside trusted
+    /// networks everything else is blocked while it is the VPN.
+    var isPartial: Bool { engine == .wireGuard && sendsAllTraffic == false }
+
+    /// Third-party VPN apps (Tailscale and others) show up as "VPN" with their own provider.
+    var isOtherApp: Bool {
+        guard engine == .macOS, kind == "VPN" else { return false }
+        if let subType { return !subType.hasPrefix("com.apple.") }
+        return remoteAddress == nil
+    }
+
+    /// VPN Guard can rename it: its own WireGuard VPNs, and the macOS VPNs kept in the network
+    /// settings (L2TP, PPTP, Cisco IPSec). Not IKEv2 or other apps' VPNs.
+    var canRename: Bool { engine == .wireGuard || ["L2TP", "PPTP", "IPSec"].contains(kind) }
 
     var typeLabel: String {
         if engine == .wireGuard { return "WireGuard" }
@@ -62,6 +78,7 @@ enum VPNCatalog {
             else { continue }
             let config = SCNetworkInterfaceGetConfiguration(iface) as? [String: Any]
             var kind = type
+            var subType: String?
             var remote: String?
             var account: String?
 
@@ -83,6 +100,8 @@ enum VPNCatalog {
             case "VPN":
                 kind = "VPN"
                 remote = config?["RemoteAddress"] as? String
+                let path = "/\(kSCPrefNetworkServices as String)/\(id)/\(kSCEntNetInterface as String)"
+                subType = (SCPreferencesPathGetValue(prefs, path as CFString) as? [String: Any])?["SubType"] as? String
             default:
                 continue
             }
@@ -96,7 +115,8 @@ enum VPNCatalog {
             }
 
             out.append(VPNService(id: id, name: (SCNetworkServiceGetName(service) as String?) ?? id,
-                                  kind: kind, remoteAddress: remote, sendsAllTraffic: allTraffic, account: account))
+                                  kind: kind, remoteAddress: remote, sendsAllTraffic: allTraffic, account: account,
+                                  subType: subType))
         }
         return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -178,6 +198,13 @@ final class VPNConnection {
         case .connecting, .connected: SCNetworkConnectionStop(c, true)
         default: break
         }
+    }
+
+    /// pppd's exit code for the last connection (L2TP, PPTP), when macOS has one.
+    var lastCause: Int? {
+        guard let c = connection, let status = SCNetworkConnectionCopyExtendedStatus(c) as? [String: Any],
+              let ppp = status["PPP"] as? [String: Any] else { return nil }
+        return (ppp["LastCause"] as? NSNumber)?.intValue
     }
 
     /// `linger: true` keeps the VPN up if this app quits.

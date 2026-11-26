@@ -88,8 +88,14 @@ public struct WireGuardTunnel: Codable, Identifiable, Hashable, Sendable {
         if !WireGuardKey.isValid(peerPublicKey) { p.append("The server public key is not a WireGuard key (44 characters, ends with =).") }
         if addresses.isEmpty { p.append("Enter your address in the VPN, e.g. 10.8.0.2/32.") }
         if let bad = addresses.first(where: { !Net.isCIDR($0) }) { p.append("\"\(bad)\" is not an address like 10.8.0.2/32.") }
+        else if let bad = addresses.first(where: { !Net.isUsableHostAddress(String($0.split(separator: "/")[0])) }) {
+            p.append("The file gives \(bad) as your address in the VPN, which is not a real address. The file may have been made before it was ready: download it again.")
+        }
         if let bad = dns.first(where: { !Net.isIPv4($0) && !Net.isIPv6($0) }) { p.append("\"\(bad)\" is not a DNS server IP address.") }
         if allowedIPs.isEmpty || allowedIPs.contains(where: { !Net.isCIDR($0) }) { p.append("Allowed IPs must be addresses like 0.0.0.0/0.") }
+        else if let odd = allowedIPs.first(where: { $0 != "0.0.0.0/0" && $0.hasPrefix("0.") }) {
+            p.append("Allowed IPs \(odd) looks like a mistake. To send all traffic through the VPN it must be 0.0.0.0/0.")
+        }
         if let mtu, !(1280...1500).contains(mtu) { p.append("MTU must be between 1280 and 1500.") }
         if let keepalive, !(0...600).contains(keepalive) { p.append("Keepalive must be 0 to 600 seconds.") }
         return p

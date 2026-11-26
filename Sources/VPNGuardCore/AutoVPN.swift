@@ -76,6 +76,17 @@ extension GuardConfig {
     }
 }
 
+extension GuardConfig {
+    /// The trusted network a VPN's address ranges carry (its router is inside one of them), e.g.
+    /// "Office" for a WireGuard tunnel with AllowedIPs 192.0.2.0/24. Nil if none.
+    public func trustedNetworkName(carriedBy ranges: [String]) -> String? {
+        trusted.first { t in
+            guard let ip = t.routerIP else { return false }
+            return ranges.contains { Net.cidrContains($0, ip: ip) }
+        }?.name
+    }
+}
+
 extension TrustedNetwork {
     /// Entries for trusting the networks in `candidates`: one per router, even when the Mac sees the
     /// same router over Wi-Fi and a cable. Links without a known router address are skipped.

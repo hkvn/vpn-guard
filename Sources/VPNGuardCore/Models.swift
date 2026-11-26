@@ -181,6 +181,10 @@ public enum HelperCommand: Codable, Sendable {
     case trustRouters(name: String, macs: [String])
     case untrust(id: UUID)
     case rename(id: UUID, name: String)
+    /// Rename a built-in WireGuard VPN.
+    case wgRename(id: UUID, name: String)
+    /// Rename an L2TP, PPTP or Cisco IPSec VPN in macOS (System Settings shows the new name too).
+    case renameMacVPN(serviceID: String, name: String)
     case pause(minutes: Int)
     case resume
     case setEnabled(Bool)
