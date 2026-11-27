@@ -8,6 +8,8 @@ struct VPNGuardApp: App {
         // `VPNGuard --render-previews <folder>` draws the UI with made-up data to PNG files.
         PreviewRenderer.runIfRequested()
         ProtectionProbe.runIfRequested()
+        QualityProbe.runIfRequested()
+        QualityCLI.runIfRequested()
     }
 
     var body: some Scene {
@@ -23,6 +25,15 @@ struct VPNGuardApp: App {
         Window("VPN Guard Settings", id: "settings") {
             SettingsView()
                 .environmentObject(model)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
+        Window("Network Quality", id: "quality") {
+            QualityView()
+                .environmentObject(model)
+                .environmentObject(model.quality)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)

@@ -28,6 +28,7 @@ struct PopoverView: View {
                         }
                     }
                     vpnCard
+                    QualityRow(quality: model.quality) { openQuality() }
                 }
                 .padding(.horizontal, 12)
             }
@@ -208,6 +209,12 @@ struct PopoverView: View {
         .padding(.trailing, 10)
         .padding(.vertical, 9)
         .background(Palette.footer)
+    }
+
+    private func openQuality() {
+        MenuBarPanel.close()
+        NSApp.activate()
+        openWindow(id: "quality")
     }
 
     private func openSettings(_ pane: SettingsPane?) {

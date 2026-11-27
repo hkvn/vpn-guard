@@ -1055,3 +1055,259 @@ final class WireGuardTests: XCTestCase {
         XCTAssertEqual(LeakTest.withoutProbes(reason: .disabled, trustedNames: "")?.verdict, .notOn)
     }
 }
+
+final class NetQualityTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    var utc: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "UTC")!
+        return c
+    }
+
+    func testStats() {
+        let s = PingStats([30, 34, nil, 32, 40])
+        XCTAssertEqual(s.count, 5)
+        XCTAssertEqual(s.loss, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(s.median, 33)
+        XCTAssertEqual(s.jitter!, (4 + 2 + 8) / 3, accuracy: 0.0001, "jitter skips the lost check")
+        XCTAssertNil(PingStats([]).median)
+        XCTAssertEqual(PingStats([nil, nil]).loss, 1)
+    }
+
+    func testGrades() {
+        XCTAssertEqual(QualityGrade.of(PingStats([30, 32, 31, 33])), .good)
+        XCTAssertEqual(QualityGrade.of(PingStats([90, 92, 91, 93])), .fair)
+        XCTAssertEqual(QualityGrade.of(PingStats([30, 80, 20, 90])), .poor, "jitter 60 ms")
+        XCTAssertEqual(QualityGrade.of(PingStats(Array(repeating: 30, count: 9) + [nil])), .poor, "10 % loss")
+        XCTAssertEqual(QualityGrade.of(PingStats([30])), .unknown, "too few checks")
+        XCTAssertEqual(QualityGrade.of(PingStats([nil, nil, nil])), .poor, "nothing answers")
+    }
+
+    func testStability() {
+        let e: [VPNEvent] = [
+            .init(at: t0, kind: .needed),
+            .init(at: t0.addingTimeInterval(4), kind: .up, seconds: 4),
+            .init(at: t0.addingTimeInterval(300), kind: .failed, vpn: "Home", detail: "Login refused"),
+            .init(at: t0.addingTimeInterval(604), kind: .dropped),
+            .init(at: t0.addingTimeInterval(610), kind: .up, seconds: 6),
+            .init(at: t0.addingTimeInterval(700), kind: .unstable, seconds: 400),
+            .init(at: t0.addingTimeInterval(1000), kind: .notNeeded),
+            .init(at: t0.addingTimeInterval(1000), kind: .stopped),
+        ]
+        let s = Stability(events: e, from: t0, now: t0.addingTimeInterval(2000))
+        XCTAssertEqual(s.drops, 1)
+        XCTAssertEqual(s.lastRecovery, 6)
+        XCTAssertEqual(s.longestUp, 600)
+        XCTAssertEqual(s.averageConnect, 5)
+        XCTAssertEqual(s.protectedShare!, 990.0 / 1000, accuracy: 0.0001, "up 600 + 390 of 1000 s needed")
+        XCTAssertNil(Stability(events: [], from: t0, now: t0.addingTimeInterval(60)).protectedShare)
+    }
+
+    func testLatestTestsKeepTheirServer() {
+        var h = QualityHistory()
+        h.tests = [
+            QualityTest(at: t0, network: "Hotspot", via: "Work VPN", server: TestServers.defaultID, ping: 50),
+            QualityTest(at: t0.addingTimeInterval(60), network: "Hotspot", via: "Work VPN", server: TestServers.defaultID, ping: 40),
+            QualityTest(at: t0.addingTimeInterval(120), network: "Hotspot", via: "Work VPN", server: "aws:us-east-1", ping: 200),
+            QualityTest(at: t0, network: "Office", via: QualityVia.noVPN, server: TestServers.defaultID, ping: 10),
+        ]
+        let cf = h.latestTests(network: "Hotspot", server: TestServers.defaultID)
+        XCTAssertEqual(cf.count, 1)
+        XCTAssertEqual(cf["Work VPN"]?.ping, 40, "the newest one")
+        XCTAssertEqual(h.latestTests(network: "Hotspot", server: "aws:us-east-1")["Work VPN"]?.ping, 200)
+        XCTAssertEqual(h.tests(network: nil, since: t0).map(\.ping), [200, 40, 50, 10], "newest first")
+        XCTAssertEqual(h.tests(network: "Office", since: t0).count, 1)
+        XCTAssertEqual(h.networks, ["Hotspot", "Office"])
+    }
+
+    func testBucketsAndPruneToDays() {
+        var h = QualityHistory()
+        h.pings = [
+            PingSample(at: t0, network: "n", via: "v", internet: 10),
+            PingSample(at: t0.addingTimeInterval(10), network: "n", via: "v", internet: 30),
+            PingSample(at: t0.addingTimeInterval(70), network: "n", via: "v", internet: nil),
+        ]
+        let b = QualityHistory.buckets(h.pings, value: { $0.internet }, from: t0, to: t0.addingTimeInterval(120), count: 2)
+        XCTAssertEqual(b.count, 2)
+        XCTAssertEqual(b[0].ms, 20)
+        XCTAssertFalse(b[0].lost)
+        XCTAssertNil(b[1].ms)
+        XCTAssertTrue(b[1].lost)
+        h.tests = [QualityTest(at: t0, network: "n", via: "v", server: TestServers.defaultID, ping: 12)]
+        h.events = [VPNEvent(at: t0, kind: .dropped)]
+        h.prune(now: t0.addingTimeInterval(9 * 86_400), calendar: utc)
+        XCTAssertTrue(h.pings.isEmpty, "pings are kept 7 days")
+        XCTAssertEqual(h.days.count, 1, "then one number per day")
+        XCTAssertEqual(h.days[0].median, 20)
+        XCTAssertEqual(h.days[0].loss, 1.0 / 3, accuracy: 0.0001)
+        XCTAssertEqual(h.days[0].count, 3)
+        XCTAssertEqual(h.tests.count, 1, "tests are kept a year")
+        XCTAssertEqual(h.events.count, 1)
+        // A late part of the same day is merged into it.
+        h.pings = [PingSample(at: t0.addingTimeInterval(100), network: "n", via: "v", internet: 50)]
+        h.prune(now: t0.addingTimeInterval(9 * 86_400), calendar: utc)
+        XCTAssertEqual(h.days.count, 1)
+        XCTAssertEqual(h.days[0].count, 4)
+        XCTAssertEqual(h.days[0].median!, (20 * 3 + 50) / 4, accuracy: 0.0001)
+        h.prune(now: t0.addingTimeInterval(400 * 86_400), calendar: utc)
+        XCTAssertTrue(h.isEmpty, "everything goes after a year")
+    }
+
+    func testTrend() {
+        var h = QualityHistory()
+        let day2 = t0.addingTimeInterval(86_400)
+        h.tests = [
+            QualityTest(at: t0, network: "n", via: "A", server: TestServers.defaultID, ping: 30, downMbps: 50, upMbps: 10),
+            QualityTest(at: t0.addingTimeInterval(60), network: "n", via: "A", server: TestServers.defaultID, ping: 40, downMbps: 70),
+            QualityTest(at: day2, network: "m", via: "A", server: TestServers.defaultID, ping: 60),
+            QualityTest(at: t0, network: "n", via: "A", server: "aws:us-east-1", ping: 300),
+        ]
+        h.pings = [PingSample(at: t0.addingTimeInterval(30), network: "n", via: "B", internet: 20)]
+        let all = h.trend(network: nil, target: TestServers.defaultID, from: t0.addingTimeInterval(-86_400),
+                          to: t0.addingTimeInterval(3 * 86_400), unit: .day, calendar: utc)
+        XCTAssertEqual(all.count, 3, "A day 1, B day 1, A day 2; the AWS test is another server")
+        let a1 = all.first { $0.via == "A" }!
+        XCTAssertEqual(a1.ping, 35)
+        XCTAssertEqual(a1.down, 60)
+        XCTAssertEqual(a1.up, 10)
+        XCTAssertEqual(all.first { $0.via == "B" }?.ping, 20)
+        XCTAssertNil(all.first { $0.via == "B" }?.down)
+        let n = h.trend(network: "n", target: TestServers.defaultID, from: t0.addingTimeInterval(-86_400),
+                        to: t0.addingTimeInterval(3 * 86_400), unit: .day, calendar: utc)
+        XCTAssertEqual(n.count, 2)
+    }
+
+    func testEventLog() {
+        var h = QualityHistory()
+        h.events = [
+            VPNEvent(at: t0, kind: .up, network: "Café", vpn: "Work VPN"),
+            VPNEvent(at: t0.addingTimeInterval(100), kind: .dropped, network: "Café", vpn: "Work VPN"),
+            VPNEvent(at: t0.addingTimeInterval(106), kind: .up, network: "Café", vpn: "Work VPN"),
+            VPNEvent(at: t0.addingTimeInterval(200), kind: .failed, network: "Café", vpn: "Home", detail: "Login refused · used Work VPN"),
+            VPNEvent(at: t0.addingTimeInterval(300), kind: .unstable, seconds: 7800, network: "Hotspot", vpn: "Work VPN",
+                     detail: "Up to 96 ms ping · 8 % loss"),
+            VPNEvent(at: t0.addingTimeInterval(400), kind: .dropped, network: "Hotspot", vpn: "Work VPN"),
+        ]
+        let log = h.eventLog(network: nil, since: t0)
+        XCTAssertEqual(log.map(\.title), ["Work VPN dropped", "Unstable for 2 h 10 min (Work VPN)", "Home could not connect",
+                                          "Work VPN dropped"])
+        XCTAssertEqual(log[3].detail, "Back in 6 s")
+        XCTAssertEqual(log[0].detail, "Did not come back by itself")
+        XCTAssertEqual(log[2].tone, .red)
+        XCTAssertEqual(h.eventLog(network: "Café", since: t0).count, 2)
+    }
+
+    func testPath() {
+        // Through a VPN: 3 ms to the router, 16 to the VPN server, 38 in all.
+        let ok = QualityPath(router: PingStats([3, 3, 3]), server: 16, total: PingStats([38, 38, 38]), viaVPN: true)
+        XCTAssertEqual(ok.local, 3)
+        XCTAssertEqual(ok.road, 13)
+        XCTAssertEqual(ok.internet, 22)
+        XCTAssertNil(ok.slow)
+        // Slow Wi-Fi: blamed even when the rest is fine.
+        let wifi = QualityPath(router: PingStats([58, 20, 90, 40]), server: 72, total: PingStats([96, 80, 110, 99]), viaVPN: true)
+        XCTAssertEqual(wifi.slow, .local)
+        XCTAssertTrue(wifi.localJumps)
+        // A far VPN server.
+        let road = QualityPath(router: PingStats([3, 3, 3]), server: 160, total: PingStats([180, 182, 181]), viaVPN: true)
+        XCTAssertEqual(road.slow, .road)
+        // Without a VPN: no road, the internet part is the rest.
+        let direct = QualityPath(router: PingStats([2, 2, 2]), server: nil, total: PingStats([12, 12, 12]), viaVPN: false)
+        XCTAssertNil(direct.road)
+        XCTAssertEqual(direct.internet, 10)
+    }
+
+    func testVerdict() {
+        func t(_ via: String, ping: Double, down: Double?, loss: Double = 0) -> QualityTest {
+            QualityTest(at: t0, network: "n", via: via, server: TestServers.defaultID, ping: ping, loss: loss, downMbps: down)
+        }
+        let rows = [t("Work VPN", ping: 38, down: 48.2), t("Home", ping: 29, down: 61.5), t("Office VPN", ping: 71, down: 70, loss: 0.02),
+                    t(QualityVia.noVPN, ping: 12, down: 95)]
+        let v = CompareVerdict.decide(rows, current: "Work VPN")!
+        XCTAssertEqual(v.best, "Home", "Office VPN has more download but loses pings; No VPN can't be used")
+        XCTAssertEqual(v.other, "Work VPN")
+        XCTAssertEqual(v.headline, "Home is the best here.")
+        XCTAssertEqual(v.detail, "9 ms less ping and 13 Mbps more download than Work VPN.")
+        let mine = CompareVerdict.decide(rows, current: "Home")!
+        XCTAssertTrue(mine.bestIsCurrent)
+        XCTAssertEqual(mine.other, "Work VPN", "the runner-up")
+        // Ping only: the lowest ping wins.
+        let pings = CompareVerdict.decide([t("A", ping: 50, down: nil), t("B", ping: 30, down: 10)], current: "A")!
+        XCTAssertEqual(pings.best, "B")
+        XCTAssertEqual(pings.detail, "20 ms less ping than A.")
+        XCTAssertNil(CompareVerdict.decide([t("A", ping: 50, down: nil)], current: "A"), "one connection: nothing to compare")
+    }
+
+    func testUnstableTracker() {
+        var u = UnstableTracker()
+        let bad = PingStats([90, 160, nil, 120, 95])
+        let good = PingStats([30, 31, 30])
+        XCTAssertNil(u.update(network: "n", via: "v", stats: good, now: t0))
+        XCTAssertNil(u.update(network: "n", via: "v", stats: bad, now: t0.addingTimeInterval(60)))
+        XCTAssertTrue(u.isUnstable)
+        XCTAssertNil(u.update(network: "n", via: "v", stats: bad, now: t0.addingTimeInterval(660)))
+        XCTAssertNil(u.update(network: "n", via: "v", stats: good, now: t0.addingTimeInterval(700)), "calm, but not for 5 minutes yet")
+        let e = u.update(network: "n", via: "v", stats: good, now: t0.addingTimeInterval(960))
+        XCTAssertEqual(e?.kind, .unstable)
+        XCTAssertEqual(e?.seconds, 600)
+        XCTAssertEqual(e?.detail, "Up to 108 ms ping · 20 % loss")
+        XCTAssertFalse(u.isUnstable)
+        // Too short to log; a change of place ends it too.
+        _ = u.update(network: "n", via: "v", stats: bad, now: t0.addingTimeInterval(2000))
+        XCTAssertNil(u.update(network: "m", via: "v", stats: good, now: t0.addingTimeInterval(2060)))
+        XCTAssertFalse(u.isUnstable)
+    }
+
+    func testCSVAndOldFiles() {
+        let tests = [QualityTest(at: t0, network: "Café, 2nd floor", via: "Work VPN", server: TestServers.defaultID,
+                                 ping: 38, jitter: 4, loss: 0.02, downMbps: 48.21, upMbps: nil)]
+        let events = [EventLine(at: t0.addingTimeInterval(60), network: "=cmd", title: "Work VPN dropped",
+                                detail: "Back in \"6\" s", tone: .orange)]
+        let csv = QualityCSV.make(tests: tests, events: events, timeZone: TimeZone(identifier: "UTC")!).split(separator: "\n")
+        XCTAssertEqual(String(csv[0]), QualityCSV.header)
+        XCTAssertEqual(String(csv[1]), "Event,2027-01-15 08:01:00,'=cmd,,,,,,,,Work VPN dropped,\"Back in \"\"6\"\" s\"")
+        XCTAssertEqual(String(csv[2]), "Test,2027-01-15 08:00:00,\"Café, 2nd floor\",Work VPN,Cloudflare,38,4,2,48.2,,,")
+        // Development files of 1.3.0 (pings without a router, separate speed tests) still load.
+        let old = #"{"pings":[{"at":0,"network":"n","via":"V","internet":30,"serverTried":false}],"#
+            + #""speeds":[{"at":0,"network":"n","via":"V","downMbps":50,"upMbps":0,"rpm":600}],"events":[{"at":0,"kind":"up"}]}"#
+        let decoded = try! JSONDecoder().decode(QualityHistory.self, from: Data(old.utf8))
+        XCTAssertEqual(decoded.pings.first?.targetID, TestServers.defaultID)
+        XCTAssertNil(decoded.pings.first?.router)
+        XCTAssertEqual(decoded.tests.first?.downMbps, 50)
+        XCTAssertNil(decoded.tests.first?.upMbps)
+        XCTAssertEqual(decoded.events.first?.kind, .up)
+        let again = try! JSONDecoder().decode(QualityHistory.self, from: JSONEncoder().encode(decoded))
+        XCTAssertEqual(again, decoded)
+        XCTAssertEqual(QualityFormat.duration(6), "6 s")
+        XCTAssertEqual(QualityFormat.duration(3 * 3600 + 12 * 60), "3 h 12 min")
+        XCTAssertEqual(QualityFormat.mbps(339.4), "339")
+        XCTAssertEqual(QualityFormat.mbps(48.21), "48.2")
+    }
+}
+
+final class TestServerTests: XCTestCase {
+    func testCatalog() {
+        let all = TestServers.all
+        XCTAssertEqual(all.count, 77)
+        XCTAssertEqual(Set(all.map(\.id)).count, all.count, "ids are unique")
+        XCTAssertEqual(Set(TestProvider.allCases), Set(all.map(\.provider)))
+        for s in all {
+            XCTAssertTrue(Net.isHostName(s.host) || Net.isIPv4(s.host), s.host)
+            if let u = s.downloadURL { XCTAssertTrue(u.hasPrefix("https://"), u) }
+        }
+        XCTAssertEqual(TestServers.server(id: nil).id, TestServers.defaultID)
+        XCTAssertEqual(TestServers.server(id: "gone:x").id, TestServers.defaultID, "a removed server falls back")
+        XCTAssertEqual(TestServers.server(id: "vultr:sgp").abilities, "Ping · speed ↓")
+        XCTAssertEqual(TestServers.server(id: "aws:ap-southeast-1").abilities, "Ping")
+        XCTAssertEqual(TestServers.cloudflare.abilities, "Ping · speed ↓↑")
+        XCTAssertEqual(TestServers.server(id: "aws:ap-east-1").host, "dynamodb.ap-east-1.amazonaws.com")
+    }
+
+    func testSpeedServerAndTitles() {
+        XCTAssertEqual(TestServers.speedServer(for: TestServers.server(id: "aws:eu-west-1")).id, TestServers.defaultID)
+        XCTAssertEqual(TestServers.speedServer(for: TestServers.server(id: "vultr:sgp")).id, "vultr:sgp")
+        XCTAssertEqual(TestServers.server(id: "vultr:sel-kor").shortTitle, "Vultr Seoul")
+        XCTAssertEqual(TestServers.cloudflare.shortTitle, "Cloudflare")
+        XCTAssertEqual(TestServers.cloudflare.longTitle, "Cloudflare · nearest city")
+    }
+}

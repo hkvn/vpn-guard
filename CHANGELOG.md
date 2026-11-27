@@ -2,9 +2,19 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org).
 
-## 1.3.0 — unreleased
+## 1.3.0 — 2026-11-27
 
 ### Added
+- **Network quality** (click *Network quality* in the popover), a window with four tabs.
+  *Monitor*: ping, jitter and loss now, the path (this Mac → router → VPN server → test server) with
+  the time of each part and, when something is slow, which part in plain words; the last 10 minutes;
+  how stable the VPN was today. *Compare*: one test for one or more connections (your VPNs, and No VPN
+  on a trusted network or during a Pause), ping or ping + speed; it runs in place, then says which VPN
+  is best here with a button to use it. *History*: 7 days, 30 days or 1 year, per network; charts of
+  ping and speed per connection, every test, an events log (drops, failed connections and why,
+  unstable times), Export CSV, Clear History; kept 1 year on this Mac. *Servers*: Cloudflare (default),
+  AWS, Google Cloud, DigitalOcean or Vultr, 77 in all, measured and listed fastest first. Background
+  checks every 60 s are off by default.
 - **VPN Guard says why the VPN did not connect.** For L2TP and PPTP it reads what macOS wrote down
   and says it in plain words: login refused (with the server's error number), the server did not
   answer, the shared secret was not accepted, the server name was not found, or the connection was

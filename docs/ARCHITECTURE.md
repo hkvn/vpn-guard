@@ -54,6 +54,7 @@ flowchart LR
 | `/Library/Application Support/VPNGuard/config.json` | root 0644 | Settings, trusted networks, servers, WireGuard tunnels (no secrets) |
 | `/Library/Application Support/VPNGuard/wireguard-keys.json` | root **0600** | WireGuard private and pre-shared keys |
 | `/Library/Application Support/VPNGuard/clients.json` | root 0644 | Code hashes of the app copy that installed the helper (ad-hoc builds) |
+| `~/Library/Application Support/VPN Guard/quality.json` | user | Network quality history (pings 7 days, speed tests and VPN events 30 days) |
 | `/etc/resolver/<vpn host>` | root 0644 | Sends only that VPN server name to the helper's DNS answerer |
 | `/var/run/vpnguard.pftoken` | root | pf enable reference |
 | `/var/run/vpnguard-dns.json` | root | Original DNS settings while WireGuard overrides them (crash backup) |
@@ -225,10 +226,11 @@ once; the profile file is readable only by the user and deleted after 10 minutes
 
 ## The app
 
-SwiftUI `MenuBarExtra` (window style) plus two windows (Settings, Welcome). The menu bar icon is a
-template image drawn in code (`GuardGlyph`) from the same 24-unit shield geometry as the app icon and
-the popover. The status orb (`ProtectionOrb`) animates with a `TimelineView` at 30 fps only while
-visible, respects Reduce Motion, and toggles protection on a 0.7 s press and hold.
+SwiftUI `MenuBarExtra` (window style) plus three windows (Settings, Network Quality, Welcome). The menu
+bar icon is a template image drawn in code (`GuardGlyph`) from the same 24-unit shield geometry as the
+app icon and the popover. The status orb (`ProtectionOrb`) runs its endless motion as Core Animation
+layers (`OrbLayers`, 20 fps, 30 for the fast spin) only while visible, respects Reduce Motion, and
+toggles protection on a 0.7 s press and hold.
 
 ### When the VPN fails
 
@@ -249,6 +251,45 @@ visible, respects Reduce Motion, and toggles protection on a 0.7 s press and hol
   (`IP_BOUND_IF`, like `ping -b`), so the VPN's routes do not apply, and tries TCP 443 and UDP 53 to
   1.1.1.1 (and IPv6 if the card has it). pf must stop all of them. `VPNGuard --probe en0` prints the
   raw results.
+
+### Network quality
+
+All in the app, no helper change. The window (`QualityView`) has the Settings shape: icon tabs on top
+(Monitor, Compare, History, Servers; one file per tab). `QualityProbe` pings with a datagram ICMP
+socket (allowed without root on macOS; the reply comes with its IP header), falling back to the time of
+a TCP connect to port 443. Each check pings the test server the normal way (through the VPN when it is
+up), and, bound to the physical card (`IP_BOUND_IF`), the VPN server and the router: the pf rules
+already let both out while locked, so the router is measured even when nothing else can go out.
+`QualityPath` (Core) turns the three into the parts of the path and picks the slow one (the router
+over 30 ms or jumping, else the larger of the other two parts when the grade is not good).
+`QualityMonitor` runs a check every 2 s while the window is open, every 60 s in the background only if
+the user turned that on, and records VPN events (needed / up / dropped / stopped, from `AppModel`;
+failed with the reason and the backup used; unstable times from `UnstableTracker`: poor for 5 minutes
+or more, ended after 5 calm minutes).
+
+A test (Compare tab) is one or more connections in turn: `AppModel.compareSwitch(to:)` sets
+`comparingVPNID`, which wins over the backup and the chosen VPN in `activeVPNID`; `QualityMonitor.noVPNID`
+there means "no VPN" (allowed only where the network is open: trusted, paused, protection off). While it
+runs, the automatic VPN, backups, failure counting and notices stand still; a change of network, pause
+or protection stops it. Each connection gets 10 pings and, if asked, a speed test: `HTTPSpeedTest`
+against the test server's files, or Cloudflare's (`__down` / `__up`) for servers without them (Vultr:
+the 100 MB file, download only). 4 parallel requests restarted until the time is up, the first second
+not counted, only 2xx answers counted, uploads counted when the server confirms them. The result is a
+`QualityTest`; `CompareVerdict` names the best VPN.
+
+Test servers (`TestServers`, Core): Cloudflare `1.1.1.1` (ICMP), and for AWS
+(`dynamodb.<region>.amazonaws.com`), Google Cloud (`storage.<region>.rep.googleapis.com`), DigitalOcean
+(`<region>.digitaloceanspaces.com`) and Vultr (`<city>-ping.vultr.com`) the TCP connect time on 443
+(host names cached 10 minutes). DigitalOcean's old `speedtest-*` hosts and gcping.com's list were gone
+on 2026-11-27, so their regional storage endpoints stand in. Samples and tests store their server; the
+charts and the Compare table filter on it.
+
+`QualityHistory` (Core, tested) keeps pings 7 days, then rolls whole days into one `PingDay` each;
+tests, days and events 1 year. It also makes the History charts (`trend`, per day or week), the events
+log (`eventLog`) and the CSV (`QualityCSV`, formula-like cells made harmless). Older development files
+(separate speed results) still load. `VPNGuard --servers` and `VPNGuard --speedtest <id> <seconds>` run
+the same checks in a terminal. File: `~/Library/Application Support/VPN Guard/quality.json`, written at
+most every 5 minutes and when the window closes or a test ends.
 
 ## Release builds
 

@@ -70,6 +70,10 @@ enum PreviewRenderer {
             colorModel.menuBarIconStyle = .color
             render(SettingsView().environmentObject(colorModel), appearance: appearance,
                    to: dir.appendingPathComponent("settings-general-color-\(name).png"))
+            // Network Quality: the four tabs and the Monitor states, with made-up numbers.
+            for (label, make) in QualityPreview.screens() {
+                render(make(), appearance: appearance, to: dir.appendingPathComponent("quality-\(label)-\(name).png"))
+            }
             // General with "Open at login" off: the warning.
             let noLoginModel = AppModel(preview: .protected)
             noLoginModel.settingsPane = .general
@@ -170,5 +174,131 @@ enum PreviewRenderer {
 private struct PanelBackground: View {
     var body: some View {
         Color(light: NSColor(hex: 0xF2F2F4), dark: NSColor(hex: 0x262629))
+    }
+}
+
+/// Made-up Network Quality data for `--render-previews` (example names only).
+@MainActor
+enum QualityPreview {
+    static let vpns = [
+        VPNService(id: "preview", name: "Office VPN", kind: "L2TP", remoteAddress: "vpn.example.com", sendsAllTraffic: true),
+        VPNService(id: "preview-home", name: "Home VPN", kind: "IKEv2", remoteAddress: "home.example.com", sendsAllTraffic: true),
+        VPNService(id: "preview-travel", name: "Travel VPN", kind: "L2TP", remoteAddress: "198.51.100.30", sendsAllTraffic: true),
+        VPNService(id: "preview-2", name: "Branch Office", kind: "L2TP", remoteAddress: "203.0.113.10", sendsAllTraffic: false,
+                   account: "vpn"),
+    ]
+
+    static func model(_ scenario: AppModel.PreviewScenario) -> AppModel {
+        let m = AppModel(preview: scenario)
+        m.previewSetMacVPNs(vpns)
+        m.quality.model = m
+        return m
+    }
+
+    static func view(_ m: AppModel, tab: QualityTab) -> AnyView {
+        m.quality.tab = tab
+        return AnyView(QualityView().environmentObject(m).environmentObject(m.quality))
+    }
+
+    /// Each screen is built right before it is rendered (the tab is part of the shared model).
+    static func screens() -> [(String, () -> AnyView)] {
+        var out: [(String, () -> AnyView)] = []
+        let m = model(.protected)
+        m.quality.previewHistory(history(network: "iPhone hotspot", via: "Office VPN"))
+        m.quality.previewRouter((0..<60).map { 3 + Double($0 % 3) * 0.4 })
+        m.quality.picked = ["preview", "preview-home", "preview-travel"]
+        m.quality.withSpeed = true
+        var times: [String: Double?] = [:]
+        for (i, s) in TestServers.all.enumerated() { times[s.id] = 31 + Double((i * 37) % 300) }
+        times[TestServers.defaultID] = 44
+        times["aws:ap-southeast-7"] = 31
+        times["aws:me-central-1"] = .some(nil)
+        m.quality.previewServerTimes(times, via: "Office VPN")
+        for tab in QualityTab.allCases { out.append((tab.rawValue, { view(m, tab: tab) })) }
+
+        let running = model(.protected)
+        running.quality.previewHistory(history(network: "iPhone hotspot", via: "Office VPN"))
+        running.quality.previewRouter((0..<60).map { 3 + Double($0 % 3) * 0.4 })
+        let now = Date()
+        running.quality.previewRun(QualityMonitor.TestRun(network: "iPhone hotspot", withSpeed: true, items: [
+            .init(id: "preview", name: "Office VPN", step: .done, stepStarted: now.addingTimeInterval(-40),
+                  test: QualityTest(at: now, network: "iPhone hotspot", via: "Office VPN", server: TestServers.defaultID,
+                                    ping: 38, jitter: 4, loss: 0, downMbps: 48.2, upMbps: 12.1)),
+            .init(id: "preview-home", name: "Home VPN", step: .speed, stepStarted: now.addingTimeInterval(-9),
+                  test: QualityTest(at: now, network: "iPhone hotspot", via: "Home VPN", server: TestServers.defaultID,
+                                    ping: 29, jitter: 2, loss: 0)),
+            .init(id: "preview-travel", name: "Travel VPN"),
+        ], startedWith: "Office VPN"))
+        out.append(("compare-running", { view(running, tab: .compare) }))
+
+        // Monitor: slow Wi-Fi, a trusted network, and blocked.
+        let slow = model(.protected)
+        var h = QualityHistory()
+        for i in 0..<90 {
+            let at = now.addingTimeInterval(Double(i - 90) * 2)
+            let router = [58.0, 20, 90, 40, 75, 33][i % 6]
+            h.pings.append(PingSample(at: at, network: "iPhone hotspot", via: "Office VPN", internet: i % 33 == 5 ? nil : router + 38 + Double(i % 4) * 3,
+                                      server: 68, serverTried: true, router: router))
+        }
+        slow.quality.previewHistory(h)
+        slow.quality.previewRouter([58, 20, 90, 40, 75, 33, 61, 28, 84, 49])
+        out.append(("monitor-slow", { view(slow, tab: .monitor) }))
+
+        let trusted = model(.trusted)
+        var th = QualityHistory()
+        for i in 0..<90 {
+            th.pings.append(PingSample(at: now.addingTimeInterval(Double(i - 90) * 2), network: "Office", via: QualityVia.noVPN,
+                                       internet: 12 + Double(i % 3) * 0.5, router: 2 + Double(i % 2) * 0.3))
+        }
+        trusted.quality.previewHistory(th)
+        trusted.quality.previewRouter((0..<20).map { 2 + Double($0 % 2) * 0.3 })
+        out.append(("monitor-trusted", { view(trusted, tab: .monitor) }))
+
+        let blocked = model(.blocked)
+        blocked.quality.previewRouter([4, 4.2, 3.8, 4.1])
+        out.append(("monitor-blocked", { view(blocked, tab: .monitor) }))
+        return out
+    }
+
+    static func history(network: String, via: String) -> QualityHistory {
+        let now = Date()
+        let cal = Calendar.current
+        var h = QualityHistory()
+        // The last 10 minutes, every 10 s: a jump and a lost check 4 minutes ago (the VPN dropped).
+        for i in 0..<60 {
+            let at = now.addingTimeInterval(Double(i - 60) * 10)
+            let jump = (i == 35 || i == 36) ? 34.0 : 0
+            h.pings.append(PingSample(at: at, network: network, via: via, internet: i == 37 ? nil : 36 + 4 * sin(Double(i) / 3) + jump,
+                                      server: 16 + 1.5 * sin(Double(i) / 4), serverTried: true, router: 3 + Double(i % 3) * 0.4))
+        }
+        let today = cal.startOfDay(for: now)
+        h.events = [
+            VPNEvent(at: today.addingTimeInterval(-86_400 * 2 + 18 * 3600 + 120), kind: .failed, network: "Wi-Fi", vpn: "Home VPN",
+                     detail: "Login refused · used Office VPN"),
+            VPNEvent(at: today.addingTimeInterval(-86_400 * 2 + 19 * 3600 + 300), kind: .unstable, seconds: 7800, network: "Wi-Fi",
+                     vpn: via, detail: "Up to 96 ms ping · 8 % loss"),
+            VPNEvent(at: today, kind: .needed, network: network),
+            VPNEvent(at: today.addingTimeInterval(4), kind: .up, seconds: 4, network: network, vpn: via),
+            VPNEvent(at: now.addingTimeInterval(-245), kind: .dropped, network: network, vpn: via),
+            VPNEvent(at: now.addingTimeInterval(-239), kind: .up, seconds: 6, network: network, vpn: via),
+        ]
+        func test(_ ago: TimeInterval, _ net: String, _ via: String, _ p: Double, _ j: Double, _ l: Double, _ d: Double, _ u: Double) {
+            h.tests.append(QualityTest(at: now.addingTimeInterval(-ago), network: net, via: via, server: TestServers.defaultID,
+                                       ping: p, jitter: j, loss: l, downMbps: d, upMbps: u, speedServer: TestServers.defaultID))
+        }
+        test(3600, network, via, 38, 4, 0, 48.2, 12.1)
+        test(3540, network, "Home VPN", 29, 2, 0, 61.5, 18.4)
+        test(3480, network, "Travel VPN", 71, 15, 0.02, 22.4, 6.0)
+        let pings: [Double] = [40, 39, 41, 44, 58, 38]
+        let downs: [Double] = [47, 49, 46, 9, 48, 47]
+        for d in 1...6 {
+            let ago = Double(d) * 86_400 + 3600
+            test(ago, d == 2 ? "Wi-Fi" : network, via, pings[d - 1], d == 2 ? 31 : 4, d == 2 ? 0.03 : 0, downs[d - 1],
+                 d == 2 ? 2.2 : 12)
+            if d >= 3, d % 2 == 1 { test(ago + 300, network, "Home VPN", 30 + Double(d), 2, 0, 50 + Double(d) * 2, 17) }
+            if d == 3 { test(ago + 600, network, "Travel VPN", 74, 14, 0.01, 23, 6.2) }
+            test(ago + 36_000, "Office", QualityVia.noVPN, 12, 1, 0, 95.2, 41)
+        }
+        return h
     }
 }

@@ -10,8 +10,9 @@ This guide shows how to set up and use VPN Guard. For how it works inside, see
 - [5. WireGuard on a MikroTik router](#5-wireguard-on-a-mikrotik-router)
 - [6. Pause (hotel and café login pages)](#6-pause-hotel-and-café-login-pages)
 - [7. Settings](#7-settings)
-- [8. Command line](#8-command-line)
-- [9. Logs, updates, uninstall](#9-logs-updates-uninstall)
+- [8. Network quality](#8-network-quality)
+- [9. Command line](#9-command-line)
+- [10. Logs, updates, uninstall](#10-logs-updates-uninstall)
 
 ## 1. First run
 
@@ -317,7 +318,72 @@ The test only contacts `1.1.1.1` (Cloudflare) and asks it for `apple.com`. It se
 
 <img src="images/sheet-protection-test-pass-light.png" width="460" alt="Protection test: No leaks found">
 
-## 8. Command line
+## 8. Network quality
+
+Click **Network quality** in the popover to open its window. It has four tabs, one for each question.
+
+**Monitor: is my connection good right now, and where is the time lost?**
+
+<img src="images/quality-monitor-light.png" width="700" alt="Network Quality: Monitor">
+
+- **Ping, jitter, loss** of the last few minutes: how long an answer from the test server takes (ping),
+  how much that time jumps (jitter: high jitter makes calls stutter), and how many checks got no
+  answer (loss). The grade uses them: *Stable* (good for calls), *A bit unstable*, *Unstable*.
+- **Path**: this Mac → the router → the VPN server → the test server, with the time of each part.
+  Green parts are inside the VPN. VPN Guard pings the router and the VPN server straight (the lock
+  allows both), so it can tell which part is slow and says it in plain words, for example "The slow
+  part is the Wi‑Fi itself". Without a VPN (a trusted network) the path has no VPN server. When the
+  VPN is not connected outside a trusted network, only the router can be measured.
+- **Ping, last 10 minutes**: to the test server, to the VPN server and to the router, with orange marks
+  where checks got no answer or the VPN dropped.
+- **VPN today**: how much of the time you were protected while a VPN was needed, how often the VPN
+  dropped and how fast it came back, and how long connecting takes.
+
+VPN Guard checks every 2 s while the window is open, and not at all when it is closed, unless you turn
+on **Keep checking in the background** (History tab; off by default): then every 60 s, a few bytes.
+
+**Compare: which connection is best here?**
+
+<img src="images/quality-compare-light.png" width="700" alt="Network Quality: Compare">
+
+Pick the connections (one is fine), choose **Ping** or **Ping + speed**, and click **Run Test**. VPN
+Guard connects each VPN in turn, measures it, and goes back to the VPN you use. The lock stays on the
+whole time: outside a trusted network only the VPN being tested can reach the internet, and your
+internet pauses while it switches. **No VPN** can be tested only on a trusted network or while
+protection is paused (anywhere else it would be a leak). VPNs that carry only some addresses, other
+apps' VPNs and VPNs that need a fix cannot be compared. Ping takes about 10 s per connection; a speed
+test about 15 s more and up to 350 MB, so on a phone hotspot (or with Low Data Mode) VPN Guard asks
+first. Pausing protection, turning it off or changing network stops the test.
+
+The table shows the last result of each connection on the network you choose in **Results on**. When
+two VPNs or more were tested, it says which one is best (the most download without lost pings, or the
+lowest ping when there was no speed test) and offers **Use** to make it your VPN.
+
+**History: how was it over days and weeks?**
+
+<img src="images/quality-history-light.png" width="700" alt="Network Quality: History">
+
+Choose 7 days, 30 days or 1 year, and all networks or one. **Over time** draws ping and download (or
+upload) for each connection, one point per day (per week for a year); click a name to hide it.
+**Tests** lists every test with all its numbers; click a column to sort. **Events** lists when the VPN
+dropped, when it could not connect (and why, and which backup VPN was used) and when the connection
+was unstable for a while. **Export CSV…** saves tests and events for a spreadsheet; **Clear History…**
+deletes everything. Tests and events are kept 1 year; background ping points 7 days, then one number
+per day. All of it stays on this Mac, in `~/Library/Application Support/VPN Guard/quality.json`.
+
+**Servers: where do the tests go?**
+
+<img src="images/quality-servers-light.png" width="700" alt="Network Quality: Servers">
+
+One test server for ping and speed: Cloudflare (its nearest city) by default, or one of 77 servers of
+Cloudflare, AWS (18 regions), Google Cloud (18), DigitalOcean (11) or Vultr (29 cities). The tab
+measures them all and lists the fastest first; filter by provider or search a city, and click a row to
+use it. For all but Cloudflare the ping is the time to open a connection on port 443, the same way for
+every provider. AWS, Google Cloud and DigitalOcean have no speed files: with one of them, speed tests
+use Cloudflare. Vultr has download files only. Results keep their server, so the numbers always compare
+like with like.
+
+## 9. Command line
 
 The helper installs a `vpnguard` command (in `/usr/local/bin`). It talks to the helper the same way
 the app does.
@@ -338,7 +404,7 @@ the app does.
 | `vpnguard detect` | Show the networks and routers this Mac sees (no helper needed) |
 | `vpnguard rules` | Print the firewall rules lock mode would use now |
 
-## 9. Logs, updates, uninstall
+## 10. Logs, updates, uninstall
 
 **Logs:** Settings → Helper & About → **Show Log**, or:
 

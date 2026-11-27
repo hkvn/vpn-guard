@@ -51,6 +51,10 @@ VPN Guard fixes this with one rule:
 - **Says why the VPN failed**, in plain words ("the server refused the login"), can fall back to a
   **backup VPN**, and sends a notification when you stay blocked.
 - **Protection test.** One button checks that nothing gets out outside your VPN.
+- **Network quality.** Ping, jitter and loss now, which part of the path is slow (router, VPN server
+  or the internet), a side-by-side test of your VPNs that tells you which one is best here, and a
+  one-year history with charts, events and CSV export. Test servers from Cloudflare, AWS, Google Cloud,
+  DigitalOcean or Vultr.
 - **VPN server by host name** works even while DNS is blocked: VPN Guard answers just that one name
   on your Mac.
 - **Pause** for a few minutes (café login pages), with a countdown.
@@ -63,6 +67,12 @@ VPN Guard fixes this with one rule:
   <img src="docs/images/popover-blocked-dark.png" width="300" alt="Popover: Blocked, dark mode">
   &nbsp;
   <img src="docs/images/add-vpn-type-light.png" width="420" alt="Add a VPN">
+</p>
+
+<p align="center">
+  <img src="docs/images/quality-monitor-light.png" width="420" alt="Network quality: Monitor">
+  &nbsp;
+  <img src="docs/images/quality-compare-light.png" width="420" alt="Network quality: Compare VPNs">
 </p>
 
 ## Requirements
@@ -111,7 +121,7 @@ release: `UNIVERSAL=1 SIGN_IDENTITY=- scripts/build.sh && scripts/make-dmg.sh`.
 
 | Guide | What is in it |
 |---|---|
-| [User guide](docs/USER_GUIDE.md) | Setup, trusted networks, VPNs, WireGuard on MikroTik, pause, menu bar icons, CLI |
+| [User guide](docs/USER_GUIDE.md) | Setup, trusted networks, VPNs, WireGuard on MikroTik, pause, notifications, protection test, network quality, CLI |
 | [Architecture](docs/ARCHITECTURE.md) | How the helper, firewall rules, DNS answerer, WireGuard engine and app fit together |
 | [Security](SECURITY.md) | Threat model, what is and is not protected, reporting a vulnerability |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | No internet, VPN does not connect, DNS, emergency off switch |
